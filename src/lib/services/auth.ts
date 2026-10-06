@@ -1,0 +1,43 @@
+/**
+ * Auth service — thin wrapper over Supabase Auth.
+ * Called from "use client" components only. Not itself a component.
+ */
+import type { User, AuthError } from "@supabase/supabase-js";
+
+function configured() {
+  return !!(process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
+}
+
+async function getClient() {
+  const { createClient } = await import("@/lib/supabase/client");
+  return createClient();
+}
+
+export interface AuthResult { user: User | null; error: AuthError | null }
+
+export async function signUp(email: string, password: string, fullName: string): Promise<AuthResult> {
+  if (!configured()) return { user: null, error: null };
+  const sb = await getClient();
+  const { data, error } = await sb.auth.signUp({
+    email, password, options: { data: { full_name: fullName } },
+  });
+  return { user: data.user ?? null, error };
+}
+
+export async function signIn(email: string, password: string): Promise<AuthResult> {
+  if (!configured()) return { user: null, error: null };
+  const sb = await getClient();
+  const { data, error } = await sb.auth.signInWithPassword({ email, password });
+  return { user: data.user ?? null, error };
+}
+
+export async function signOut(): Promise<{ error: AuthError | null }> {
+  if (!configured()) return { error: null };
+  return (await getClient()).auth.signOut();
+}
+
+export async function getUser(): Promise<User | null> {
+  if (!configured()) return null;
+  const { data } = await (await getClient()).auth.getUser();
+  return data.user;
+}
