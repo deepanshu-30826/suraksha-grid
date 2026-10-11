@@ -6,6 +6,7 @@ export async function middleware(request: NextRequest) {
   return updateSession(request);
 }
 
+
 export const config = {
   runtime: "nodejs",
   matcher: [
