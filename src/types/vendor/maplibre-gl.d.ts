@@ -61,9 +61,11 @@ declare module "maplibre-gl" {
     moveLayer(id: string, beforeId?: string): this;
     getSource(id: string): GeoJSONSource | undefined;
     getLayer(id: string): unknown | undefined;
+    setLayoutProperty(id: string, name: string, value: unknown): this;
     getCanvas(): HTMLCanvasElement;
     fitBounds(bounds: LngLatBounds, opts?: Record<string, unknown>): this;
     flyTo(opts: Record<string, unknown>): this;
+    setStyle(style: string | Record<string, unknown>): this;
   }
 
   export interface IControl {
@@ -82,8 +84,12 @@ declare module "maplibre-gl" {
 
   export type Popup = _Popup;
   export class _Popup {
-    constructor(opts?: { offset?: number; closeButton?: boolean });
+    constructor(opts?: { offset?: number; closeButton?: boolean; maxWidth?: string });
     setText(t: string): this;
+    setHTML(html: string): this;
+    setLngLat(ll: LngLatLike): this;
+    addTo(map: _Map): this;
+    remove(): void;
   }
 
   export class NavigationControl implements IControl {

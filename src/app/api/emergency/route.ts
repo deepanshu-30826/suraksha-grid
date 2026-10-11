@@ -2,8 +2,8 @@ import { NextResponse, type NextRequest } from "next/server";
 
 export interface EmergencyPayload {
   user_name: string;
-  latitude: number;
-  longitude: number;
+  latitude?: number;
+  longitude?: number;
   destination?: string;
   route_name?: string;
   emergency_contact_email?: string;

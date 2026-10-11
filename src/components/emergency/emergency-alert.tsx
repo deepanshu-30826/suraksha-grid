@@ -4,7 +4,7 @@ import { AlertTriangle, CheckCircle2, X, Phone, Loader2, MapPin, Info } from "lu
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { ORIGIN } from "@/lib/mock-data";
+import { useGeolocation } from "@/lib/location";
 
 export type EmergencyState =
   | "idle"
@@ -26,10 +26,12 @@ const COUNTDOWN_SEC = 60;
 export function EmergencyAlert({ userName = "App User", destination, routeName, onClose }: Props) {
   const [phase, setPhase]         = useState<EmergencyState>("idle");
   const [remaining, setRemaining] = useState(COUNTDOWN_SEC);
-  const [result, setResult]       = useState<{ sms_simulated?: boolean; email_sent?: boolean; map_link?: string; error?: string } | null>(null);
+  const [result, setResult]       = useState<{ sms_simulated?: boolean; email_sent?: boolean; map_link?: string; error?: string; email_error?: string; location_available?: boolean } | null>(null);
   const [contactEmail, setContactEmail] = useState("");
   const [contactPhone, setContactPhone] = useState("");
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const { coords: geoCoords, isLoading: isGeoLoading } = useGeolocation({ autoRequest: true });
 
   useEffect(() => {
     if (phase !== "countdown") return;
@@ -45,15 +47,17 @@ export function EmergencyAlert({ userName = "App User", destination, routeName, 
     }, 1000);
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phase]);
+  }, [phase, geoCoords]);
 
   async function sendAlert() {
+    if (phase === "sending" || phase === "sent") return;
     setPhase("sending");
     try {
+      const hasLocation = Boolean(geoCoords);
       const body = {
         user_name:               userName,
-        latitude:                ORIGIN[1],
-        longitude:               ORIGIN[0],
+        latitude:                hasLocation ? geoCoords!.latitude : undefined,
+        longitude:               hasLocation ? geoCoords!.longitude : undefined,
         destination:             destination,
         route_name:              routeName,
         emergency_contact_email: contactEmail || undefined,
@@ -165,7 +169,15 @@ export function EmergencyAlert({ userName = "App User", destination, routeName, 
               </p>
               <div className="flex items-center gap-1.5 text-xs text-muted">
                 <MapPin className="h-3.5 w-3.5 text-brand" />
-                Current location captured (demo)
+                {geoCoords ? (
+                  <span>Location captured ({geoCoords.latitude.toFixed(4)}, {geoCoords.longitude.toFixed(4)})</span>
+                ) : isGeoLoading ? (
+                  <span className="flex items-center gap-1">
+                    <Loader2 className="h-3 w-3 animate-spin text-brand" /> Acquiring GPS location…
+                  </span>
+                ) : (
+                  <span className="text-amber-600 font-medium">GPS location unavailable</span>
+                )}
               </div>
             </div>
             <div className="flex gap-2">
@@ -199,11 +211,16 @@ export function EmergencyAlert({ userName = "App User", destination, routeName, 
                 <Info className="h-4 w-4 shrink-0" />
                 SMS: SIMULATED — no real SMS was sent in demo mode
               </div>
-              {result.map_link && (
+              {result.map_link ? (
                 <a href={result.map_link} target="_blank" rel="noopener noreferrer"
                   className="flex items-center gap-1.5 text-brand hover:underline">
                   <MapPin className="h-4 w-4" />View location on map
                 </a>
+              ) : (
+                <div className="flex items-center gap-1.5 text-xs text-muted">
+                  <MapPin className="h-3.5 w-3.5 text-muted" />
+                  <span>Location was unavailable at time of alert</span>
+                </div>
               )}
             </div>
             <Button className="w-full" onClick={onClose}>Close</Button>

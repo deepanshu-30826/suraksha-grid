@@ -30,15 +30,29 @@ export async function subscribeToReports(
   if (!configured()) return { unsubscribe: () => {} };
   const { createClient } = await import("@/lib/supabase/client");
   const sb = createClient();
+  const chanId = `safety_reports_inserts_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
   const ch = sb
-    .channel(`safety_reports_inserts_${Date.now()}`)
+    .channel(chanId)
     .on<ReportRow>(
       "postgres_changes",
       { event: "INSERT", schema: "public", table: "safety_reports" },
-      (payload) => onInsert(payload.new),
+      (payload) => {
+        if (payload?.new) {
+          onInsert(payload.new as ReportRow);
+        }
+      },
     )
     .subscribe();
-  return { unsubscribe: () => { sb.removeChannel(ch); } };
+
+  return {
+    unsubscribe: () => {
+      try {
+        void sb.removeChannel(ch);
+      } catch (e) {
+        console.warn("[realtime] unsubscribe error:", e);
+      }
+    },
+  };
 }
 
 export async function subscribeToSegmentUpdates(
@@ -47,18 +61,32 @@ export async function subscribeToSegmentUpdates(
   if (!configured()) return { unsubscribe: () => {} };
   const { createClient } = await import("@/lib/supabase/client");
   const sb = createClient();
+  const chanId = `road_segments_updates_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
   const ch = sb
-    .channel(`road_segments_updates_${Date.now()}`)
+    .channel(chanId)
     .on<SegmentRow>(
       "postgres_changes",
       { event: "UPDATE", schema: "public", table: "road_segments" },
       (payload) => {
-        const { id, safety_score, updated_at } = payload.new;
-        onUpdate({ id, safety_score, updated_at });
+        if (payload?.new) {
+          const { id, safety_score, updated_at } = payload.new;
+          if (id && safety_score !== undefined) {
+            onUpdate({ id, safety_score, updated_at });
+          }
+        }
       },
     )
     .subscribe();
-  return { unsubscribe: () => { sb.removeChannel(ch); } };
+
+  return {
+    unsubscribe: () => {
+      try {
+        void sb.removeChannel(ch);
+      } catch (e) {
+        console.warn("[realtime] unsubscribe error:", e);
+      }
+    },
+  };
 }
 
 /**

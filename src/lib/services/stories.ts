@@ -1,13 +1,12 @@
 import type { Story } from "@/types";
-import { stories as mockStories } from "@/lib/mock-data";
-import { apiGet } from "@/lib/services/api";
+import { apiGet, apiPost } from "@/lib/services/api";
 
 function configured() {
   return !!(process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
 }
 
 export async function getStories(): Promise<Story[]> {
-  if (!configured()) return mockStories;
+  if (!configured()) return [];
 
   const mapRows = (rows: Array<Record<string, unknown>>): Story[] =>
     rows.map((s) => ({
@@ -42,7 +41,7 @@ export async function getStories(): Promise<Story[]> {
       if (error) throw error;
       return mapRows((data ?? []) as unknown as Record<string, unknown>[]);
     } catch {
-      return mockStories;
+      return [];
     }
   }
 }
@@ -56,14 +55,14 @@ export interface CreateStoryInput {
 
 export async function createStory(input: CreateStoryInput): Promise<{ ok: boolean; error?: string }> {
   if (!configured()) {
-    console.info("[stories] mock create", input);
-    return { ok: true };
+    return { ok: false, error: "Database not configured." };
   }
   try {
     const { createClient } = await import("@/lib/supabase/client");
     const supabase = createClient();
     const { data: ud } = await supabase.auth.getUser();
-    const { error } = await supabase.from("street_stories").insert({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { error } = await (supabase.from("street_stories") as any).insert({
       user_id:         ud.user?.id ?? null,
       content:         input.content,
       place_name:      input.place_name ?? null,
@@ -73,7 +72,17 @@ export async function createStory(input: CreateStoryInput): Promise<{ ok: boolea
     if (error) throw error;
     return { ok: true };
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : "Unknown error" };
+    try {
+      await apiPost("stories", {
+        content: input.content,
+        place_name: input.place_name ?? null,
+        tags: input.tags ?? [],
+        road_segment_id: input.road_segment_id ?? null,
+      });
+      return { ok: true };
+    } catch {
+      return { ok: false, error: err instanceof Error ? err.message : "Unknown error" };
+    }
   }
 }
 
@@ -82,6 +91,7 @@ export async function incrementHelpful(id: string): Promise<void> {
   try {
     const { createClient } = await import("@/lib/supabase/client");
     const supabase = createClient();
-    await supabase.rpc("increment_helpful", { story_id: id });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (supabase.rpc as any)("increment_helpful", { story_id: id });
   } catch { /* silent */ }
 }

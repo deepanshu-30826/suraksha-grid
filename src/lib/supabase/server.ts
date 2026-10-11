@@ -7,6 +7,12 @@ import { createServerClient, type CookieOptions } from "@supabase/ssr";
 import { cookies } from "next/headers";
 import type { Database } from "./types";
 
+export type CookieToSet = {
+  name: string;
+  value: string;
+  options: CookieOptions;
+};
+
 export function createServerSupabaseClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -15,12 +21,19 @@ export function createServerSupabaseClient() {
   const cookieStore = cookies();
   return createServerClient<Database>(url, key, {
     cookies: {
-      get(name: string) {
-        return cookieStore.get(name)?.value;
+      getAll() {
+        return cookieStore.getAll();
       },
-      // In Server Components, set/remove are no-ops; middleware handles refresh.
-      set(_name: string, _value: string, _options: CookieOptions) {},
-      remove(_name: string, _options: CookieOptions) {},
+      setAll(cookiesToSet: CookieToSet[]) {
+        try {
+          cookiesToSet.forEach(({ name, value, options }) =>
+            cookieStore.set(name, value, options)
+          );
+        } catch {
+          // The `setAll` method was called from a Server Component.
+          // This can be ignored if you have middleware refreshing user sessions.
+        }
+      },
     },
   });
 }

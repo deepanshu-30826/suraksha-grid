@@ -6,7 +6,6 @@
  * for offline development.
  */
 import type { SafetyReport } from "@/types";
-import { reports as mockReports } from "@/lib/mock-data";
 import { apiGet } from "@/lib/services/api";
 
 function isSupabaseConfigured() {
@@ -29,8 +28,7 @@ export async function createReport(
   input: CreateReportInput,
 ): Promise<{ ok: boolean; error?: string }> {
   if (!isSupabaseConfigured()) {
-    console.info("[reports] mock: created report", input);
-    return { ok: true };
+    return { ok: false, error: "Database not configured." };
   }
 
   try {
@@ -38,7 +36,8 @@ export async function createReport(
     const supabase = createClient();
     const { data: userData } = await supabase.auth.getUser();
 
-    const { error } = await supabase.from("safety_reports").insert({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { error } = await (supabase.from("safety_reports") as any).insert({
       user_id: userData.user?.id ?? null,
       category: input.category,
       description: input.description,
@@ -58,7 +57,7 @@ export async function createReport(
 }
 
 export async function getReports(): Promise<SafetyReport[]> {
-  if (!isSupabaseConfigured()) return mockReports;
+  if (!isSupabaseConfigured()) return [];
 
   const mapRows = (rows: Array<Record<string, unknown>>): SafetyReport[] =>
     rows.map((r) => {
@@ -100,8 +99,8 @@ export async function getReports(): Promise<SafetyReport[]> {
       if (error) throw error;
       return mapRows((data ?? []) as unknown as Record<string, unknown>[]);
     } catch (err) {
-      console.warn("[reports] Supabase unavailable, using mock data:", err);
-      return mockReports;
+      console.warn("[reports] Supabase unavailable:", err);
+      return [];
     }
   }
 }

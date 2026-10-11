@@ -1,29 +1,60 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { type CookieOptions } from "@supabase/ssr";
+import { createServerClient, type CookieOptions } from "@supabase/ssr";
+import { cookies } from "next/headers";
+import type { Database } from "@/lib/supabase/types";
+
+export type CookieToSet = {
+  name: string;
+  value: string;
+  options: CookieOptions;
+};
 
 export async function GET(request: NextRequest) {
-  const url    = new URL(request.url);
-  const code   = url.searchParams.get("code");
-  const next   = url.searchParams.get("next") ?? "/";
+  const { searchParams, origin } = new URL(request.url);
+  const code = searchParams.get("code");
+  const next = searchParams.get("next") ?? searchParams.get("redirect") ?? "/";
 
   if (code) {
-    try {
-      const { createServerClient } = await import("@supabase/ssr");
-      const { cookies }            = await import("next/headers");
-      const cookieStore            = cookies();
-      const sb = createServerClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL!,
-        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-        {
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    if (url && key) {
+      try {
+        const cookieStore = cookies();
+        const sb = createServerClient<Database>(url, key, {
           cookies: {
-            get(name: string) { return cookieStore.get(name)?.value; },
-            set(_n: string, _v: string, _o: CookieOptions) {},
-            remove(_n: string, _o: CookieOptions) {},
+            getAll() {
+              return cookieStore.getAll();
+            },
+            setAll(cookiesToSet: CookieToSet[]) {
+              try {
+                cookiesToSet.forEach(({ name, value, options }) =>
+                  cookieStore.set(name, value, options)
+                );
+              } catch {
+                // Route handler cookie set error fallback
+              }
+            },
           },
+        });
+        const { error } = await sb.auth.exchangeCodeForSession(code);
+        if (!error) {
+          const forwardedHost = request.headers.get("x-forwarded-host");
+          const isLocalEnv = process.env.NODE_ENV === "development";
+          const targetPath = next.startsWith("/") ? next : `/${next}`;
+          if (isLocalEnv) {
+            return NextResponse.redirect(`${origin}${targetPath}`);
+          } else if (forwardedHost) {
+            return NextResponse.redirect(`https://${forwardedHost}${targetPath}`);
+          } else {
+            return NextResponse.redirect(`${origin}${targetPath}`);
+          }
         }
-      );
-      await sb.auth.exchangeCodeForSession(code);
-    } catch { /* redirect anyway */ }
+      } catch (err) {
+        console.error("[auth/callback] session exchange failed:", err);
+      }
+    }
   }
-  return NextResponse.redirect(new URL(next, request.url));
+
+  const targetPath = next.startsWith("/") ? next : `/${next}`;
+  return NextResponse.redirect(new URL(targetPath, request.url));
 }

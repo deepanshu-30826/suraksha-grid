@@ -19,8 +19,11 @@ CREATE POLICY "profiles_update_own"
   USING (auth.uid() = id)
   WITH CHECK (auth.uid() = id);
 
--- The trigger (handle_new_user) runs as SECURITY DEFINER so it bypasses RLS.
--- No INSERT policy needed for regular users.
+-- Users can insert only their own profile (in case trigger was bypassed)
+CREATE POLICY "profiles_insert_own"
+  ON profiles FOR INSERT
+  TO authenticated
+  WITH CHECK (auth.uid() = id);
 
 -- ============================================================
 -- road_segments  (public read, no user writes via client)

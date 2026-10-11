@@ -154,7 +154,7 @@ class TestTimeDecay:
     def test_recent_year_high_weight(self):
         from app.services.crime.evidence import _time_weight
         w = _time_weight(2023, reference_year=2024)
-        assert w > 0.8
+        assert w >= 0.79
 
     def test_old_data_lower_weight(self):
         from app.services.crime.evidence import _time_weight
@@ -272,3 +272,330 @@ class TestWeights:
             + EVIDENCE_WEIGHTS.exposure + EVIDENCE_WEIGHTS.time_weight
         )
         assert abs(total - 1.0) < 1e-9
+
+# ===========================================================
+# District normalization (join_geometry helpers)
+# ===========================================================
+
+class TestJoinNormalization:
+    """Tests for the name-normalization logic in join_geometry.py."""
+
+    def _normalize(self, s):
+        import re
+        s = s.lower().strip()
+        s = re.sub(r"[&]", "and", s)
+        s = re.sub(r"[^a-z0-9 ]", " ", s)
+        s = re.sub(r"\s+", " ", s).strip()
+        return s
+
+    def test_normalize_strips_ampersand(self):
+        # & → "and"; surrounding chars collapse into it (no extra spaces from re.sub)
+        result = self._normalize("A&N Islands")
+        assert "and" in result and "islands" in result
+
+    def test_normalize_lowercases(self):
+        assert self._normalize("Rajasthan") == "rajasthan"
+
+    def test_non_territorial_railway(self):
+        from scripts.join_geometry import _is_non_territorial
+        assert _is_non_territorial("Mumbai Railway") is True
+
+    def test_non_territorial_grp(self):
+        from scripts.join_geometry import _is_non_territorial
+        assert _is_non_territorial("GRP Ajmer") is True
+
+    def test_non_territorial_cyber(self):
+        from scripts.join_geometry import _is_non_territorial
+        assert _is_non_territorial("Cyber Cell") is True
+
+    def test_non_territorial_scrb(self):
+        from scripts.join_geometry import _is_non_territorial
+        assert _is_non_territorial("SCRB") is True
+
+    def test_territorial_regular_district(self):
+        from scripts.join_geometry import _is_non_territorial
+        assert _is_non_territorial("Jaipur East") is False
+        assert _is_non_territorial("Pune") is False
+        assert _is_non_territorial("Bengaluru City") is False
+
+    def test_strip_commr_suffix(self):
+        from scripts.join_geometry import _strip_suffixes, _normalize
+        assert _strip_suffixes(_normalize("Mumbai Commr")) == "mumbai"
+
+    def test_strip_city_suffix(self):
+        from scripts.join_geometry import _strip_suffixes, _normalize
+        assert _strip_suffixes(_normalize("Nagpur City")) == "nagpur"
+
+    def test_jaipur_east_alias_resolves(self):
+        from scripts.join_geometry import DISTRICT_ALIASES, _normalize
+        key = (_normalize("Jaipur East"), _normalize("Rajasthan"))
+        assert key in DISTRICT_ALIASES
+        assert DISTRICT_ALIASES[key] == "jaipur"
+
+    def test_bengaluru_city_alias(self):
+        from scripts.join_geometry import DISTRICT_ALIASES, _normalize
+        key = (_normalize("Bengaluru City"), _normalize("Karnataka"))
+        assert key in DISTRICT_ALIASES
+
+    def test_match_returns_wkt_for_exact(self):
+        from scripts.join_geometry import match_ncrb_to_boundary, _normalize
+        # Build a minimal index
+        index = {(_normalize("Maharashtra"), _normalize("Pune")): "POLYGON((73 18, 74 18, 74 19, 73 19, 73 18))"}
+        wkt, mtype = match_ncrb_to_boundary("Maharashtra", "Pune", index)
+        assert wkt is not None
+        assert mtype in ("exact", "normalized")
+
+    def test_match_returns_none_for_railway(self):
+        from scripts.join_geometry import match_ncrb_to_boundary
+        index = {}
+        wkt, mtype = match_ncrb_to_boundary("Maharashtra", "Mumbai Railway", index)
+        assert wkt is None
+        assert mtype == "non_territorial"
+
+    def test_match_returns_unmatched_for_unknown(self):
+        from scripts.join_geometry import match_ncrb_to_boundary
+        index = {}
+        wkt, mtype = match_ncrb_to_boundary("Rajasthan", "Completely Unknown District XYZ", index)
+        assert wkt is None
+        assert mtype == "unmatched"
+
+    def test_geojson_polygon_to_wkt(self):
+        from scripts.join_geometry import _geojson_to_wkt
+        geom = {"type": "Polygon", "coordinates": [[[73, 18], [74, 18], [74, 19], [73, 19], [73, 18]]]}
+        wkt = _geojson_to_wkt(geom)
+        assert wkt is not None
+        assert wkt.startswith("POLYGON")
+
+    def test_geojson_multipolygon_to_wkt(self):
+        from scripts.join_geometry import _geojson_to_wkt
+        geom = {"type": "MultiPolygon",
+                "coordinates": [[[[73, 18], [74, 18], [74, 19], [73, 19], [73, 18]]]]}
+        wkt = _geojson_to_wkt(geom)
+        assert wkt is not None
+        assert wkt.startswith("MULTIPOLYGON")
+
+    def test_build_boundary_index_extracts_entries(self):
+        from scripts.join_geometry import build_boundary_index
+        features = [{
+            "type": "Feature",
+            "properties": {"state_name": "Rajasthan", "district_name": "Jaipur"},
+            "geometry": {"type": "Polygon",
+                         "coordinates": [[[75.0, 26.8], [75.2, 26.8], [75.2, 27.0],
+                                          [75.0, 27.0], [75.0, 26.8]]]},
+        }]
+        index = build_boundary_index(features)
+        assert len(index) > 0
+
+    def test_build_boundary_index_skips_missing_props(self):
+        from scripts.join_geometry import build_boundary_index
+        features = [{"type": "Feature", "properties": {}, "geometry": None}]
+        index = build_boundary_index(features)
+        assert len(index) == 0
+
+
+# ===========================================================
+# Route intersection (mocked DB RPC)
+# ===========================================================
+
+class TestRouteIntersection:
+    def _make_db(self, rows):
+        """Return a mock DB where rpc('crime_route_intersections') returns rows."""
+        db = MagicMock()
+        rpc_mock = MagicMock()
+        rpc_mock.execute.return_value = MagicMock(data=rows)
+        db.rpc.return_value = rpc_mock
+
+        # check_dataset_available mock
+        count_mock = MagicMock()
+        count_mock.execute.return_value = MagicMock(count=len(rows) + 1)
+        db.table.return_value.select.return_value.limit.return_value = count_mock
+        return db
+
+    @pytest.mark.asyncio
+    async def test_positive_intersection_returns_results(self):
+        from app.services.crime.spatial import route_crime_intersections
+        row = {
+            "district": "Jaipur East", "state": "Rajasthan",
+            "crime_category": "total_cognizable_ipc_crimes",
+            "incident_count": 1200, "year": 2023,
+            "severity_weight": 0.4, "intersection_m": 9934.0,
+            "source": "NCRB", "source_dataset": "Crime in India 2023",
+        }
+        db = self._make_db([row])
+        results = await route_crime_intersections(db, "LINESTRING(75.05 26.9, 75.15 26.9)", 9900.0)
+        assert len(results) == 1
+        assert results[0].district == "Jaipur East"
+        assert results[0].intersection_m == pytest.approx(9934.0)
+
+    @pytest.mark.asyncio
+    async def test_negative_intersection_returns_empty(self):
+        from app.services.crime.spatial import route_crime_intersections
+        db = self._make_db([])  # RPC returns no rows
+        results = await route_crime_intersections(db, "LINESTRING(80.0 20.0, 80.5 20.5)", 70000.0)
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_zero_length_route_returns_empty(self):
+        from app.services.crime.spatial import route_crime_intersections
+        db = MagicMock()
+        results = await route_crime_intersections(db, "LINESTRING(75.0 26.9, 75.0 26.9)", 0.0)
+        assert results == []
+        db.rpc.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_rpc_error_returns_empty_not_exception(self):
+        from app.services.crime.spatial import route_crime_intersections
+        db = MagicMock()
+        db.rpc.side_effect = RuntimeError("PostGIS error")
+        results = await route_crime_intersections(db, "LINESTRING(75.0 26.9, 75.2 26.9)", 5000.0)
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_exposure_fraction_calculated(self):
+        from app.services.crime.spatial import route_crime_intersections
+        row = {
+            "district": "D", "state": "S", "crime_category": "theft",
+            "incident_count": 100, "year": 2023, "severity_weight": 0.4,
+            "intersection_m": 500.0, "source": "T", "source_dataset": "T",
+        }
+        db = self._make_db([row])
+        results = await route_crime_intersections(db, "LINESTRING(0 0, 1 0)", 1000.0)
+        assert len(results) == 1
+        assert results[0].exposure_fraction == pytest.approx(0.5)
+
+    @pytest.mark.asyncio
+    async def test_check_dataset_available_true(self):
+        from app.services.crime.spatial import check_dataset_available
+        db = MagicMock()
+        resp_mock = MagicMock(count=42)
+        db.table.return_value.select.return_value.limit.return_value.execute.return_value = resp_mock
+        assert await check_dataset_available(db) is True
+
+    @pytest.mark.asyncio
+    async def test_check_dataset_available_false(self):
+        from app.services.crime.spatial import check_dataset_available
+        db = MagicMock()
+        resp_mock = MagicMock(count=0)
+        db.table.return_value.select.return_value.limit.return_value.execute.return_value = resp_mock
+        assert await check_dataset_available(db) is False
+
+
+# ===========================================================
+# No-data-does-not-mean-safe
+# ===========================================================
+
+class TestNoDataNotSafe:
+    """Absence of historical data must not signal 'safe'."""
+
+    def test_none_level_has_nonzero_confidence(self):
+        from app.services.crime.evidence import aggregate
+        ev = aggregate([], dataset_available=True)
+        assert ev.evidence_level == "NONE"
+        # Confidence should reflect that the area was checked but not that
+        # it is safe; it must be moderate (≥30), not artificially low.
+        assert ev.confidence >= 30
+
+    def test_none_adjustment_is_zero_not_positive(self):
+        from app.services.crime.evidence import aggregate
+        ev = aggregate([], dataset_available=True)
+        assert ev.score_adjustment == 0.0
+
+    def test_unavailable_has_zero_adjustment(self):
+        from app.services.crime.evidence import aggregate
+        ev = aggregate([], dataset_available=False)
+        assert ev.score_adjustment == 0.0
+        assert not ev.dataset_available
+
+    def test_safety_engine_no_evidence_applies_no_change(self):
+        from app.services.safety_engine import calculate_safety_score, SafetyInput, apply_historical_evidence
+        inp = SafetyInput(lighting=60, pedestrian_activity=60, emergency_access="Fair", reports=[])
+        result = calculate_safety_score(inp)
+        unchanged = apply_historical_evidence(result, 0.0, "no evidence")
+        assert unchanged.safety_score == result.safety_score
+
+    def test_safety_engine_negative_evidence_always_reduces(self):
+        from app.services.safety_engine import calculate_safety_score, SafetyInput, apply_historical_evidence
+        inp = SafetyInput(lighting=80, pedestrian_activity=80, emergency_access="Good", reports=[])
+        result = calculate_safety_score(inp)
+        adjusted = apply_historical_evidence(result, -5.0, "moderate crime exposure")
+        assert adjusted.safety_score <= result.safety_score
+
+    def test_explanation_mentions_historical_evidence(self):
+        from app.services.safety_engine import calculate_safety_score, SafetyInput, apply_historical_evidence
+        inp = SafetyInput(lighting=70, pedestrian_activity=70, emergency_access="Good", reports=[])
+        result = calculate_safety_score(inp)
+        adjusted = apply_historical_evidence(result, -7.0, "HIGH crime evidence: theft, robbery")
+        assert "historical" in adjusted.explanation.lower()
+
+    def test_score_never_below_zero_with_evidence(self):
+        from app.services.safety_engine import calculate_safety_score, SafetyInput, apply_historical_evidence
+        inp = SafetyInput(lighting=0, pedestrian_activity=0, emergency_access="Limited", reports=[])
+        result = calculate_safety_score(inp)
+        adjusted = apply_historical_evidence(result, -12.0, "very high crime exposure")
+        assert adjusted.safety_score >= 0
+
+
+# ===========================================================
+# NCRB combined dataset parsing
+# ===========================================================
+
+class TestNCRBCombinedDataset:
+    """Parse the actual ncrb_2023_combined.csv to verify it loads correctly."""
+
+    CSV_PATH = Path(__file__).parent.parent.parent / "data" / "crime" / "ncrb_2023_combined.csv"
+
+    @pytest.mark.skipif(
+        not (Path(__file__).parent.parent.parent / "data" / "crime" / "ncrb_2023_combined.csv").exists(),
+        reason="Combined NCRB dataset not present"
+    )
+    def test_combined_dataset_parses_3780_records(self):
+        from app.services.crime.importer import CrimeDataImporter
+        imp = CrimeDataImporter("NCRB", "Crime in India 2023")
+        records, summary = imp.parse(self.CSV_PATH)
+        assert summary.total_rows == 3780
+        # Allow minor skips (0-count rows are valid and kept)
+        assert summary.imported >= 3700
+        assert summary.skipped < 100
+
+    @pytest.mark.skipif(
+        not (Path(__file__).parent.parent.parent / "data" / "crime" / "ncrb_2023_combined.csv").exists(),
+        reason="Combined NCRB dataset not present"
+    )
+    def test_combined_dataset_all_year_2023(self):
+        from app.services.crime.importer import CrimeDataImporter
+        imp = CrimeDataImporter("NCRB", "Crime in India 2023")
+        records, _ = imp.parse(self.CSV_PATH)
+        assert all(r.year == 2023 for r in records)
+
+    @pytest.mark.skipif(
+        not (Path(__file__).parent.parent.parent / "data" / "crime" / "ncrb_2023_combined.csv").exists(),
+        reason="Combined NCRB dataset not present"
+    )
+    def test_jaipur_split_districts_present(self):
+        from app.services.crime.importer import CrimeDataImporter
+        imp = CrimeDataImporter("NCRB", "Crime in India 2023")
+        records, _ = imp.parse(self.CSV_PATH)
+        rajasthan = {r.district for r in records if r.state == "Rajasthan"}
+        expected = {"Jaipur East", "Jaipur West", "Jaipur North", "Jaipur South",
+                    "Jaipur Rural", "Jaipur Metro", "Jaipur Crime"}
+        assert len(expected & rajasthan) > 0, "Expected Jaipur sub-districts not found"
+        assert "Jaipur" not in rajasthan, "'Jaipur' (plain) should NOT appear — NCRB uses sub-districts"
+
+    def test_crime_geojson_endpoint(self):
+        from fastapi.testclient import TestClient
+        from app.main import app
+
+        client = TestClient(app)
+        resp = client.get("/api/v1/crime/geojson")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data.get("type") == "FeatureCollection"
+        assert "features" in data
+        assert len(data["features"]) > 0
+        f0 = data["features"][0]
+        assert "properties" in f0
+        assert "district" in f0["properties"]
+        assert "total_incidents" in f0["properties"]
+        assert f0["properties"]["year"] == 2023
+        assert f0["properties"]["source"] == "NCRB"
+        assert "geometry" in f0

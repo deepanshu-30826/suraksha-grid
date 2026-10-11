@@ -4,6 +4,7 @@ export type LngLat = [number, number]; // [lng, lat] — matches GeoJSON/MapLibr
 
 export interface RouteOption {
   id: RouteId;
+  dbId?: string;
   name: string;
   etaMin: number;
   distanceKm: number;
@@ -17,6 +18,29 @@ export interface RouteOption {
   positiveFactors?: string[];
   explanation?: string;
   timePeriod?: string;
+  historicalEvidence?: {
+    available: boolean;
+    level: "NONE" | "LOW" | "MODERATE" | "HIGH" | "UNAVAILABLE";
+    adjustment?: number;
+    confidence?: number;
+    explanation?: string;
+    source?: string;
+    source_dataset?: string;
+    years?: number[];
+    categories?: string[];
+    intersections_count?: number;
+    intersections?: Array<{
+      district: string;
+      state: string;
+      crime_category: string;
+      incident_count: number;
+      year: number;
+      severity_weight: number;
+      intersection_m: number;
+      exposure_fraction: number;
+    }>;
+    disclaimer?: string;
+  };
 }
 
 export interface Segment {
@@ -88,4 +112,39 @@ export interface AnomalyResult {
   is_anomaly: boolean;
   severity: "none" | "low" | "medium" | "high";
   reason: string;
+}
+
+// Browser Geolocation types
+export type GeolocationErrorCode =
+  | "PERMISSION_DENIED"
+  | "POSITION_UNAVAILABLE"
+  | "TIMEOUT"
+  | "NOT_SUPPORTED"
+  | "UNKNOWN_ERROR";
+
+export interface GeolocationCoordinates {
+  latitude: number;
+  longitude: number;
+  accuracy: number | null;
+  altitude: number | null;
+  altitudeAccuracy: number | null;
+  heading: number | null;
+  speed: number | null;
+}
+
+export interface GeolocationError {
+  code: GeolocationErrorCode;
+  message: string;
+}
+
+export type GeolocationStatus = "idle" | "loading" | "success" | "error";
+
+export interface GeolocationState {
+  coords: GeolocationCoordinates | null;
+  lngLat: LngLat | null;
+  status: GeolocationStatus;
+  error: GeolocationError | null;
+  isLoading: boolean;
+  isSupported: boolean;
+  timestamp: number | null;
 }

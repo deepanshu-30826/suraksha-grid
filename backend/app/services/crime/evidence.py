@@ -140,7 +140,10 @@ def aggregate(
     source     = intersections[0].source if intersections else ""
     dataset    = intersections[0].source_dataset if intersections else ""
 
-    year_range = f"{min(years)}–{max(years)}" if years else "unknown"
+    if years:
+        year_range = f"{years[0]}" if min(years) == max(years) else f"{min(years)}-{max(years)}"
+    else:
+        year_range = "unknown"
     explanation = (
         f"{level.title()} historical crime evidence along this route "
         f"({len(intersections)} area(s), {year_range}). "

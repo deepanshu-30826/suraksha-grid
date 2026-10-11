@@ -33,8 +33,8 @@ logger = logging.getLogger(__name__)
 class EmergencyEvent:
     user_id:         Optional[str]
     user_name:       str
-    latitude:        float
-    longitude:       float
+    latitude:        Optional[float] = None
+    longitude:       Optional[float] = None
     timestamp:       datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     destination:     Optional[str] = None
     route_name:      Optional[str] = None
@@ -50,6 +50,7 @@ class AlertResult:
     email_error: Optional[str] = None
     sms_error:   Optional[str] = None
     map_link:    str = ""
+    location_available: bool = True
 
 
 # ── SMS abstraction ───────────────────────────────────────────────────────────
@@ -95,12 +96,16 @@ def _map_link(lat: float, lng: float) -> str:
 def _email_body(evt: EmergencyEvent, link: str) -> str:
     dest = evt.destination or "unknown destination"
     route = evt.route_name or "unknown route"
+    loc_str = (
+        f"{evt.latitude:.5f}, {evt.longitude:.5f}\nMap:         {link}"
+        if evt.latitude is not None and evt.longitude is not None and link
+        else "Location unavailable (GPS coordinates not provided)\nMap:         Not available"
+    )
     return f"""SURAKSHA GRID — EMERGENCY SAFETY ALERT
 
 User:        {evt.user_name}
 Time (UTC):  {evt.timestamp.strftime("%Y-%m-%d %H:%M:%S")}
-Location:    {evt.latitude:.5f}, {evt.longitude:.5f}
-Map:         {link}
+Location:    {loc_str}
 Destination: {dest}
 Route:       {route}
 
@@ -144,11 +149,13 @@ class EmergencyService:
         self._sms = get_sms_provider()
 
     async def dispatch(self, evt: EmergencyEvent) -> AlertResult:
-        link = _map_link(evt.latitude, evt.longitude)
+        has_location = evt.latitude is not None and evt.longitude is not None
+        link = _map_link(evt.latitude, evt.longitude) if has_location else ""
         result = AlertResult(
             email_sent=False, sms_sent=False,
             sms_simulated=isinstance(self._sms, DemoSmsProvider),
             map_link=link,
+            location_available=has_location,
         )
 
         # ── Email ───────────────────────────────────────────────────────────
@@ -169,9 +176,10 @@ class EmergencyService:
         # ── SMS ─────────────────────────────────────────────────────────────
         to_phone = evt.emergency_contact_phone
         if to_phone:
+            loc_desc = f"Last location: {link}" if link else "Location unavailable"
             sms_body = (
                 f"SAFETY ALERT: {evt.user_name} may need help. "
-                f"Last location: {link} at {evt.timestamp.strftime('%H:%M UTC')}"
+                f"{loc_desc} at {evt.timestamp.strftime('%H:%M UTC')}"
             )
             ok, err = await self._sms.send(to_phone, sms_body)
             result.sms_sent = ok

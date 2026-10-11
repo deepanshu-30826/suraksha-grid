@@ -7,12 +7,17 @@ import { Button } from "@/components/ui/button";
 import { Card, Chip, Skeleton } from "@/components/ui/card";
 import { ScoreBadge } from "@/components/safety/score";
 import { MapLibreMap } from "@/components/map/maplibre-map";
-import { AREA_SUMMARY, CURRENT_LOCATION, DESTINATIONS, markers } from "@/lib/mock-data";
+import { DESTINATIONS } from "@/lib/mock-data";
+import { useGeolocation } from "@/lib/location";
 import { getReports } from "@/lib/services/reports";
 import { getSegments } from "@/lib/services/segments";
+import {
+  subscribeToReports,
+  subscribeToSegmentUpdates,
+} from "@/lib/services/realtime";
 import { BRAND } from "@/lib/constants";
 import { timeAgo } from "@/lib/utils";
-import type { SafetyReport, Segment } from "@/types";
+import type { MapMarker, SafetyReport, Segment } from "@/types";
 
 export default function HomePage() {
   const r = useRouter();
@@ -20,6 +25,7 @@ export default function HomePage() {
   const [segments, setSegments] = useState<Segment[]>([]);
   const [reports, setReports] = useState<SafetyReport[]>([]);
   const [loading, setLoading] = useState(true);
+  const { coords: geoCoords, lngLat: userLngLat, isLoading: isGeoLoading } = useGeolocation({ autoRequest: true });
 
   useEffect(() => {
     let alive = true;
@@ -35,17 +41,80 @@ export default function HomePage() {
         if (alive) setLoading(false);
       });
 
+    let unsubReports: (() => void) | undefined;
+    let unsubSegments: (() => void) | undefined;
+
+    subscribeToReports((row) => {
+      if (!alive) return;
+      const newReport: SafetyReport = {
+        id: row.id,
+        place: `${row.latitude.toFixed(4)}, ${row.longitude.toFixed(4)}`,
+        tag: row.category,
+        minutesAgo: 0,
+        note: row.description ?? "",
+        latitude: row.latitude,
+        longitude: row.longitude,
+        segmentId: row.road_segment_id ?? undefined,
+      };
+      setReports((prev) => [newReport, ...prev].slice(0, 50));
+    }).then((sub) => {
+      if (alive) unsubReports = sub.unsubscribe;
+      else sub.unsubscribe();
+    });
+
+    subscribeToSegmentUpdates((row) => {
+      if (!alive) return;
+      setSegments((prev) =>
+        prev.map((s) => (s.id === row.id ? { ...s, score: row.safety_score } : s))
+      );
+    }).then((sub) => {
+      if (alive) unsubSegments = sub.unsubscribe;
+      else sub.unsubscribe();
+    });
+
     return () => {
       alive = false;
+      unsubReports?.();
+      unsubSegments?.();
     };
   }, []);
 
   const areaScore = useMemo(() => {
-    if (!segments.length) return AREA_SUMMARY.score;
+    if (!segments.length) return null;
     return Math.round(
       segments.reduce((sum, segment) => sum + segment.score, 0) / segments.length,
     );
   }, [segments]);
+
+  const mapMarkers = useMemo<MapMarker[]>(() => {
+    const list: MapMarker[] = userLngLat
+      ? [
+          {
+            id: "you",
+            x: 0,
+            y: 0,
+            lng: userLngLat[0],
+            lat: userLngLat[1],
+            kind: "you",
+            label: "You (GPS)",
+          },
+        ]
+      : [];
+    for (const rep of reports) {
+      if (rep.latitude !== undefined && rep.longitude !== undefined) {
+        list.push({
+          id: `rep-${rep.id}`,
+          x: 0,
+          y: 0,
+          lng: rep.longitude,
+          lat: rep.latitude,
+          kind: "report",
+          label: rep.tag,
+        });
+      }
+    }
+    return list;
+  }, [userLngLat, reports]);
 
   const go = (d = q) =>
     r.push(`/routes?to=${encodeURIComponent(d || DESTINATIONS[0])}`);
@@ -64,7 +133,13 @@ export default function HomePage() {
           <div className="flex items-center gap-2 rounded-xl bg-surface px-3 py-3 text-sm">
             <MapPin className="h-4 w-4 text-brand" />
             <span className="text-muted">From</span>
-            <span className="truncate font-medium">{CURRENT_LOCATION}</span>
+            <span className="truncate font-medium">
+              {geoCoords
+                ? `Current Location (${geoCoords.latitude.toFixed(3)}, ${geoCoords.longitude.toFixed(3)})`
+                : isGeoLoading
+                ? "Acquiring GPS location…"
+                : "Location unavailable (enable GPS)"}
+            </span>
           </div>
           <form
             onSubmit={(e) => {
@@ -97,14 +172,14 @@ export default function HomePage() {
         <div className="grid gap-4 sm:grid-cols-2">
           <Card className="flex items-center gap-4">
             <div className="grid h-16 w-16 shrink-0 place-items-center rounded-2xl bg-safer/10 text-2xl font-bold text-safer">
-              {areaScore}
+              {areaScore ?? "—"}
             </div>
             <div>
               <p className="font-semibold">Your area right now</p>
               <p className="text-sm text-muted">
                 {segments.length
                   ? `Live view across ${segments.length} mapped road segments.`
-                  : AREA_SUMMARY.note}
+                  : "No road segment data available for this area yet."}
               </p>
             </div>
           </Card>
@@ -165,10 +240,16 @@ export default function HomePage() {
 
       <div className="hidden overflow-hidden rounded-3xl border border-line shadow-card lg:block lg:sticky lg:top-8 lg:h-[580px]">
         <div className="relative h-full">
-          <MapLibreMap className="h-full w-full" segments={segments} markers={markers} />
-          <div className="absolute left-3 top-3 z-[5]">
-            <ScoreBadge score={areaScore} className="bg-white shadow-card" />
-          </div>
+          <MapLibreMap
+            className="h-full w-full"
+            segments={segments}
+            markers={mapMarkers}
+          />
+          {areaScore !== null && (
+            <div className="absolute left-3 top-3 z-[5]">
+              <ScoreBadge score={areaScore} className="bg-white shadow-card" />
+            </div>
+          )}
         </div>
       </div>
     </div>

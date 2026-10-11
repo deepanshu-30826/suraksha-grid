@@ -9,6 +9,7 @@ export interface ReportPayload {
   severity?: number;
   original_text?: string;
   language?: string;
+  image_url?: string;
 }
 
 function validatePayload(body: unknown): body is ReportPayload {
@@ -18,35 +19,111 @@ function validatePayload(body: unknown): body is ReportPayload {
   if (typeof b["latitude"] !== "number" || typeof b["longitude"] !== "number") return false;
   if (b["description"] !== undefined && typeof b["description"] !== "string") return false;
   if (b["description"] && (b["description"] as string).length > 2000) return false;
+  if (b["image_url"] !== undefined && typeof b["image_url"] !== "string") return false;
   return true;
 }
 
 export async function POST(request: NextRequest) {
   let body: unknown;
-  try { body = await request.json(); }
-  catch { return NextResponse.json({ error: "Invalid JSON" }, { status: 400 }); }
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+  }
 
   if (!validatePayload(body)) {
     return NextResponse.json({ error: "Missing or invalid fields" }, { status: 422 });
   }
 
+  let userId: string | null = null;
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  if (supabaseUrl && supabaseKey) {
+    try {
+      const { createServerSupabaseClient } = await import("@/lib/supabase/server");
+      const supabase = createServerSupabaseClient();
+      const {
+        data: { user },
+        error: authError,
+      } = await supabase.auth.getUser();
+
+      if (authError || !user) {
+        return NextResponse.json(
+          { error: "Authentication required to submit reports" },
+          { status: 401 }
+        );
+      }
+      userId = user.id;
+    } catch {
+      return NextResponse.json(
+        { error: "Authentication verification failed" },
+        { status: 401 }
+      );
+    }
+  }
+
   const fastapiBase = process.env.FASTAPI_BASE_URL ?? "http://localhost:8000";
   try {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (userId) {
+      headers["x-user-id"] = userId;
+    }
+
     const resp = await fetch(`${fastapiBase}/api/v1/reports/`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify(body),
       cache: "no-store",
     });
     if (!resp.ok) {
-      const err = await resp.text().catch(() => "unknown");
-      return NextResponse.json({ error: err }, { status: resp.status });
+      const err = await resp.json().catch(() => ({ error: "Report submission failed" }));
+      return NextResponse.json(err, { status: resp.status });
     }
     const data: unknown = await resp.json();
     return NextResponse.json(data, { status: 201 });
-  } catch (err) {
+  } catch {
+    // If FastAPI backend is unavailable, fallback to saving directly to Supabase if configured
+    if (supabaseUrl && supabaseKey) {
+      try {
+        const { createServerSupabaseClient } = await import("@/lib/supabase/server");
+        const supabase = createServerSupabaseClient();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const { data: inserted, error: dbError } = await (supabase.from("safety_reports") as any)
+          .insert({
+            user_id: userId,
+            category: body.category,
+            description: body.description ?? null,
+            latitude: body.latitude,
+            longitude: body.longitude,
+            road_segment_id: body.road_segment_id ?? null,
+            severity: body.severity ?? 1,
+            status: "pending",
+          })
+          .select()
+          .single();
+
+        if (dbError) {
+          return NextResponse.json({ error: "Failed to save report to database" }, { status: 500 });
+        }
+        return NextResponse.json(
+          {
+            report: inserted,
+            gemini_used: false,
+            gemini_error: "Backend AI analysis unavailable — report saved directly to database",
+          },
+          { status: 201 }
+        );
+      } catch {
+        return NextResponse.json(
+          { error: "Database error occurred while saving report" },
+          { status: 500 }
+        );
+      }
+    }
+
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Backend unavailable" },
+      { error: "Report service is currently unavailable. Please try again later." },
       { status: 503 }
     );
   }

@@ -64,6 +64,13 @@ class GeminiAnalysis(BaseModel):
     summary: str = Field(default="No summary available", max_length=500)
     confidence: Literal["low", "medium", "high"] = "low"
 
+    @field_validator("summary", mode="before")
+    @classmethod
+    def truncate_summary(cls, v: object) -> str:
+        if isinstance(v, str) and len(v) > 500:
+            return v[:500]
+        return str(v) if v is not None else "No summary available"
+
     @field_validator("severity", mode="before")
     @classmethod
     def clamp_severity(cls, v: object) -> int:

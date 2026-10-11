@@ -15,7 +15,9 @@ Copy `.env.example` to `.env.local` (Next.js) and `backend/.env.example` to `bac
 |---|---|---|
 | `NEXT_PUBLIC_SUPABASE_URL` | Next.js client | Public, safe to ship to browser |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Next.js client | Public anon key; RLS enforces access |
+| `NEXT_PUBLIC_MAPTILER_KEY` | Next.js client | MapTiler public client token for the production basemap. Get a free key at https://cloud.maptiler.com/account/keys/ — restrict it to your domain in the MapTiler console. Falls back to demotiles when absent. |
 | `SUPABASE_SERVICE_ROLE_KEY` | FastAPI **only** | Never expose to browser |
+| `OPENROUTESERVICE_API_KEY` | FastAPI **only** | OpenRouteService token for real road network routing |
 | `DATABASE_URL` | FastAPI / migrations | Supabase Postgres connection string |
 | `FASTAPI_BASE_URL` | Next.js server | Default: `http://localhost:8000` |
 | `ALLOWED_ORIGINS` | FastAPI CORS | Comma-separated, e.g. `http://localhost:3000` |
@@ -113,7 +115,7 @@ cd backend && pytest tests/ -v
 ## Architecture notes
 
 - All pages fall back to `src/lib/mock-data.ts` when Supabase env vars are absent.
-- The `MapLibreMap` component uses `demotiles.maplibre.org` as a placeholder basemap; swap `MAP_STYLE` in `src/lib/map/style.ts` for a production OSM-compatible tile source.
+- The `MapLibreMap` component uses MapTiler Streets v2 (OSM-derived) as the production basemap, configured via `NEXT_PUBLIC_MAPTILER_KEY`. Set this variable in `.env.local` (copy from `.env.example`). When the variable is absent the component falls back to the MapLibre demotiles placeholder.
 - The `src/types/vendor/maplibre-gl.d.ts` shim can be deleted once `npm install` has run (the real package ships its own types).
 
 ## Phase 5 additions
@@ -176,7 +178,9 @@ npx supabase db push
 |---|---|---|
 | `NEXT_PUBLIC_SUPABASE_URL` | Next.js browser | Yes |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Next.js browser | Yes |
+| `NEXT_PUBLIC_MAPTILER_KEY` | Next.js browser | Yes (for production basemap) — falls back to demotiles if absent |
 | `SUPABASE_SERVICE_ROLE_KEY` | FastAPI only | Yes |
+| `OPENROUTESERVICE_API_KEY` | FastAPI only | Yes (for real road routing) |
 | `DATABASE_URL` | FastAPI / migrations | Yes |
 | `FASTAPI_BASE_URL` | Next.js server | No (default `:8000`) |
 | `ALLOWED_ORIGINS` | FastAPI CORS | No |
@@ -186,7 +190,7 @@ npx supabase db push
 ### Demo limitations
 - Safety scores are from synthetic/demo data — not real-world observations
 - SMS is always simulated (`DemoSmsProvider`) — no real SMS is ever sent
-- MapLibre uses `demotiles.maplibre.org` — swap `MAP_STYLE` for production tiles
+- MapLibre uses MapTiler Streets v2 (OSM) when `NEXT_PUBLIC_MAPTILER_KEY` is set; falls back to `demotiles.maplibre.org` when the key is absent
 - GPS uses a fixed demo coordinate (`ORIGIN` in `src/lib/mock-data.ts`)
 - `npm run typecheck` and `npm run build` require `npm install` (npm registry blocked in CI sandbox)
 - `pytest` requires `pip install -r requirements.txt` (pip registry blocked in CI sandbox)

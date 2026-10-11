@@ -1,5 +1,4 @@
 import type { HelpPoint } from "@/types";
-import { helpPoints as mockHelpPoints } from "@/lib/mock-data";
 import { apiGet } from "@/lib/services/api";
 
 function isSupabaseConfigured() {
@@ -40,7 +39,7 @@ export async function getHelpPoints(
   userLng?: number,
   userLat?: number,
 ): Promise<HelpPoint[]> {
-  if (!isSupabaseConfigured()) return mockHelpPoints;
+  if (!isSupabaseConfigured()) return [];
 
   try {
     const rows = await apiGet<Record<string, unknown>[]>("help");
@@ -62,7 +61,7 @@ export async function getHelpPoints(
         userLat,
       );
     } catch {
-      return mockHelpPoints;
+      return [];
     }
   }
 }

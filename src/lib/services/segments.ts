@@ -1,5 +1,4 @@
 import type { Segment } from "@/types";
-import { segments as mockSegments } from "@/lib/mock-data";
 import { LEVELS } from "@/lib/constants";
 import { levelOf } from "@/lib/utils";
 import { lineStringCoords } from "@/lib/map/geometry";
@@ -42,7 +41,7 @@ const SEGMENT_FIELDS =
   "recent_reports_count,geometry::json";
 
 export async function getSegments(): Promise<Segment[]> {
-  if (!configured()) return mockSegments;
+  if (!configured()) return [];
 
   try {
     const rows = await apiGet<Record<string, unknown>[]>("segments");
@@ -70,14 +69,14 @@ export async function getSegments(): Promise<Segment[]> {
       }
       return mapped;
     } catch (err) {
-      console.warn("[segments] Supabase unavailable, using mock data:", err);
-      return mockSegments;
+      console.warn("[segments] Supabase unavailable:", err);
+      return [];
     }
   }
 }
 
 export async function getSegmentById(id: string): Promise<Segment | undefined> {
-  if (!configured()) return mockSegments.find((s) => s.id === id);
+  if (!configured()) return undefined;
 
   try {
     const segment = await apiGet<Record<string, unknown>>(`segments/${id}`);
@@ -96,7 +95,7 @@ export async function getSegmentById(id: string): Promise<Segment | undefined> {
         ? rowToSegment(data as unknown as Record<string, unknown>)
         : undefined;
     } catch {
-      return mockSegments.find((s) => s.id === id);
+      return undefined;
     }
   }
 }

@@ -58,6 +58,8 @@ class ReportCreate(BaseModel):
     longitude: float = Field(ge=-180, le=180)
     road_segment_id: Optional[UUID] = None
     severity: int = Field(default=1, ge=1, le=5)
+    image_url: Optional[str] = None
+
 
 
 class ReportResponse(_Base):

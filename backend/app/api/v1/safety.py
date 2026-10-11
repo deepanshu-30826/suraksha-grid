@@ -186,6 +186,49 @@ async def recalculate_segment(segment_id: UUID, db=Depends(get_supabase)):
         )
         result = calculate_safety_score(inp)
 
+        # ── Historical crime evidence integration ─────────────────────────
+        # Fetch segment geometry → route intersection → apply adjustment.
+        # Historical evidence is NEVER sent to Gemini; it adjusts the
+        # deterministic Safety Engine result only.
+        # Missing evidence (UNAVAILABLE / NONE) leaves the score unchanged.
+        try:
+            from app.services.crime.spatial import (
+                route_crime_intersections,
+                check_dataset_available,
+            )
+            from app.services.crime.evidence import aggregate
+            from app.services.safety_engine import apply_historical_evidence
+
+            if await check_dataset_available(db):
+                seg_geom_resp = (
+                    db.table("road_segments")
+                    .select("geometry::text, ST_Length(geometry::geography) as length_m")
+                    .eq("id", str(segment_id))
+                    .maybe_single()
+                    .execute()
+                )
+                geom_data = seg_geom_resp.data or {}
+                geom_wkt  = geom_data.get("geometry", "")
+                seg_len_m = float(geom_data.get("length_m") or 0)
+
+                if geom_wkt and seg_len_m > 0:
+                    intersections = await route_crime_intersections(
+                        db, geom_wkt, seg_len_m
+                    )
+                    evidence = aggregate(intersections, dataset_available=True)
+                    if evidence.score_adjustment != 0.0:
+                        result = apply_historical_evidence(
+                            result,
+                            evidence.score_adjustment,
+                            evidence.explanation,
+                        )
+        except Exception as _exc:
+            # Historical evidence failure must never break the primary score
+            import logging as _log
+            _log.getLogger(__name__).warning(
+                "Historical evidence fetch failed for segment %s: %s", segment_id, _exc
+            )
+
         # Persist back via the service-role RPC
         db.rpc("upsert_segment_scores", {
             "p_segment_id":          str(segment_id),

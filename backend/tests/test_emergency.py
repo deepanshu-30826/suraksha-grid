@@ -99,6 +99,54 @@ class TestEmergencyService:
         link = _map_link(28.46, 77.02)
         assert "28.46" in link and "77.02" in link
 
+    @pytest.mark.asyncio
+    async def test_dispatch_without_location_marks_unavailable(self, monkeypatch):
+        monkeypatch.delenv("RESEND_API_KEY", raising=False)
+        from app.services.emergency import EmergencyService
+        svc = EmergencyService()
+        evt = make_event(latitude=None, longitude=None, emergency_contact_phone="+919999999999")
+        result = await svc.dispatch(evt)
+        assert not result.location_available
+        assert result.map_link == ""
+
+    def test_emergency_trigger_endpoint_without_location(self):
+        from fastapi.testclient import TestClient
+        from app.main import app
+        client = TestClient(app)
+        resp = client.post("/api/v1/emergency/trigger", json={
+            "user_name": "Test User",
+            "emergency_contact_phone": "+919999999999"
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["location_available"] is False
+        assert data["map_link"] == ""
+
+    @pytest.mark.asyncio
+    async def test_emergency_missing_contacts_returns_errors(self, monkeypatch):
+        monkeypatch.delenv("RESEND_API_KEY", raising=False)
+        from app.services.emergency import EmergencyService
+        svc = EmergencyService()
+        evt = make_event()  # no email, no phone
+        result = await svc.dispatch(evt)
+        assert not result.email_sent
+        assert not result.sms_sent
+        assert "No emergency contact email" in (result.email_error or "")
+        assert "No emergency contact phone" in (result.sms_error or "")
+
+    @pytest.mark.asyncio
+    async def test_emergency_with_both_contacts(self, monkeypatch):
+        monkeypatch.delenv("RESEND_API_KEY", raising=False)
+        from app.services.emergency import EmergencyService
+        svc = EmergencyService()
+        evt = make_event(
+            emergency_contact_email="test@example.com",
+            emergency_contact_phone="+919876543210",
+        )
+        result = await svc.dispatch(evt)
+        assert result.sms_simulated is True
+        assert result.location_available is True
+
 
 class TestVisionService:
     def test_vision_module_parses(self):

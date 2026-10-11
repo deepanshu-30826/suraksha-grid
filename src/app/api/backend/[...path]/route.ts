@@ -6,6 +6,7 @@ const ALLOWED_PATHS = new Set([
   "reports",
   "stories",
   "help",
+  "crime",
 ]);
 
 function backendBaseUrl(): string {
@@ -20,18 +21,32 @@ async function proxy(request: NextRequest, context: { params: { path?: string[] 
     return NextResponse.json({ error: "Unsupported API resource" }, { status: 404 });
   }
 
-  const upstream = `${backendBaseUrl()}/api/v1/${path.replace(/\/+$/, "")}/`;
+  const cleanPath = path.replace(/^\/+|\/+$/g, "");
+  const upstream = `${backendBaseUrl()}/api/v1/${cleanPath}`;
   const target = new URL(upstream);
   target.search = request.nextUrl.search;
 
   try {
+    const isBodyMethod = request.method !== "GET" && request.method !== "HEAD";
+    const body = isBodyMethod ? await request.text() : undefined;
+
+    const reqHeaders: Record<string, string> = {
+      "content-type": request.headers.get("content-type") ?? "application/json",
+    };
+    const authHeader = request.headers.get("authorization");
+    if (authHeader) {
+      reqHeaders["authorization"] = authHeader;
+    }
+
     const response = await fetch(target, {
-      method: "GET",
+      method: request.method,
+      headers: reqHeaders,
+      body,
       cache: "no-store",
     });
 
-    const body = await response.text();
-    return new NextResponse(body, {
+    const resBody = await response.text();
+    return new NextResponse(resBody, {
       status: response.status,
       headers: {
         "content-type": response.headers.get("content-type") ?? "application/json",
@@ -51,6 +66,13 @@ async function proxy(request: NextRequest, context: { params: { path?: string[] 
 }
 
 export async function GET(
+  request: NextRequest,
+  context: { params: { path?: string[] } },
+) {
+  return proxy(request, context);
+}
+
+export async function POST(
   request: NextRequest,
   context: { params: { path?: string[] } },
 ) {

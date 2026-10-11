@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     # CORS — comma-separated list, e.g. "http://localhost:3000"
     allowed_origins: str = "http://localhost:3000"
 
+    # OpenRouteService
+    openrouteservice_api_key: str = ""
+    ors_base_url: str = "https://api.openrouteservice.org/v2/directions"
+
     @property
     def origins_list(self) -> list[str]:
         return [o.strip() for o in self.allowed_origins.split(",") if o.strip()]

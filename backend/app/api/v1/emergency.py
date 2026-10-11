@@ -12,8 +12,8 @@ router = APIRouter()
 
 class EmergencyRequest(BaseModel):
     user_name:       str = Field(default="App User", max_length=120)
-    latitude:        float = Field(ge=-90, le=90)
-    longitude:       float = Field(ge=-180, le=180)
+    latitude:        Optional[float] = Field(default=None, ge=-90, le=90)
+    longitude:       Optional[float] = Field(default=None, ge=-180, le=180)
     destination:     Optional[str] = Field(default=None, max_length=200)
     route_name:      Optional[str] = Field(default=None, max_length=80)
     emergency_contact_email: Optional[str] = Field(default=None, max_length=254)
@@ -25,6 +25,7 @@ class EmergencyResponse(BaseModel):
     sms_sent:      bool
     sms_simulated: bool
     map_link:      str
+    location_available: bool = True
     email_error:   Optional[str] = None
     sms_error:     Optional[str] = None
 
@@ -54,10 +55,11 @@ async def trigger_emergency(
     )
     result = await svc.dispatch(evt)
     return EmergencyResponse(
-        email_sent    = result.email_sent,
-        sms_sent      = result.sms_sent,
-        sms_simulated = result.sms_simulated,
-        map_link      = result.map_link,
-        email_error   = result.email_error,
-        sms_error     = result.sms_error,
+        email_sent          = result.email_sent,
+        sms_sent            = result.sms_sent,
+        sms_simulated       = result.sms_simulated,
+        map_link            = result.map_link,
+        location_available  = result.location_available,
+        email_error         = result.email_error,
+        sms_error           = result.sms_error,
     )
