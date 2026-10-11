@@ -7,11 +7,17 @@
  */
 import { NextResponse, type NextRequest } from "next/server";
 
+
+type RouteContext = {
+  params: Promise<{ id: string }>;
+};
+
 export async function POST(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: RouteContext
 ) {
-  const { id } = params;
+  const { id } = await params;
+
 
   if (!id || typeof id !== "string" || id.trim().length === 0) {
     return NextResponse.json({ error: "Missing or invalid report ID" }, { status: 400 });
@@ -39,7 +45,7 @@ export async function POST(
     }
 
     const { createServerSupabaseClient } = await import("@/lib/supabase/server");
-    supabase = createServerSupabaseClient();
+    supabase = await createServerSupabaseClient();
 
     if (!token) {
       const { data: sessionData } = await supabase.auth.getSession();

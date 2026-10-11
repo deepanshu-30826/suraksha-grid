@@ -29,7 +29,7 @@ async function directSupabaseInsert(
 ): Promise<NextResponse> {
   try {
     const { createServerSupabaseClient } = await import("@/lib/supabase/server");
-    const supabase = createServerSupabaseClient();
+    const supabase = await createServerSupabaseClient();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const { data: inserted, error: dbError } = await (supabase.from("safety_reports") as any)
       .insert({
@@ -90,7 +90,7 @@ export async function POST(request: NextRequest) {
       }
 
       const { createServerSupabaseClient } = await import("@/lib/supabase/server");
-      const supabase = createServerSupabaseClient();
+      const supabase = await createServerSupabaseClient();
 
       // 2. If token not in header, check cookie session
       if (!token) {

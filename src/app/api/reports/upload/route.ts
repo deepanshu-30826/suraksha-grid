@@ -49,7 +49,7 @@ export async function POST(request: NextRequest) {
     const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7).trim() : null;
 
     const { createServerSupabaseClient } = await import("@/lib/supabase/server");
-    const supabase = createServerSupabaseClient();
+    const supabase = await createServerSupabaseClient();
 
     let user = null;
     if (token) {
@@ -129,7 +129,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const { createServerSupabaseClient } = await import("@/lib/supabase/server");
-    const supabase = createServerSupabaseClient();
+    const supabase = await createServerSupabaseClient();
 
     const { error: uploadError } = await supabase.storage
       .from("report-images")

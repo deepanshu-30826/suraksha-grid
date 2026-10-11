@@ -19,7 +19,7 @@ export async function GET(request: NextRequest) {
     const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
     if (url && key) {
       try {
-        const cookieStore = cookies();
+        const cookieStore = await cookies();
         const sb = createServerClient<Database>(url, key, {
           cookies: {
             getAll() {
