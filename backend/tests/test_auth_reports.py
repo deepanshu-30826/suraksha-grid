@@ -117,6 +117,49 @@ class TestAuthAndReportOwnership:
         assert resp.status_code == 201
         app.dependency_overrides.clear()
 
+    def test_authenticated_report_submission_with_matching_token_and_x_user_id(self, mock_supabase):
+        app.dependency_overrides[get_supabase] = lambda: mock_supabase
+        client = TestClient(app)
+
+        payload = {
+            "category": "poor_lighting",
+            "latitude": 28.45,
+            "longitude": 77.02,
+        }
+        # Both Authorization Bearer token AND x-user-id forwarded by Next.js proxy
+        resp = client.post(
+            "/api/v1/reports/",
+            json=payload,
+            headers={
+                "Authorization": "Bearer valid-token-user-1",
+                "x-user-id": "user-1",
+            },
+        )
+        assert resp.status_code == 201
+        app.dependency_overrides.clear()
+
+    def test_authenticated_report_submission_with_mismatched_x_user_id_rejected_with_403(self, mock_supabase):
+        app.dependency_overrides[get_supabase] = lambda: mock_supabase
+        client = TestClient(app)
+
+        payload = {
+            "category": "poor_lighting",
+            "latitude": 28.45,
+            "longitude": 77.02,
+        }
+        # Token says user-1, but x-user-id claims user-2
+        resp = client.post(
+            "/api/v1/reports/",
+            json=payload,
+            headers={
+                "Authorization": "Bearer valid-token-user-1",
+                "x-user-id": "user-2",
+            },
+        )
+        assert resp.status_code == 403
+        assert "Spoofed user ID" in resp.json()["detail"]
+        app.dependency_overrides.clear()
+
     def test_analyse_image_unauthenticated_rejected_with_401(self, mock_supabase):
         app.dependency_overrides[get_supabase] = lambda: mock_supabase
         client = TestClient(app)

@@ -17,7 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Card, Chip } from "@/components/ui/card";
 import { REPORT_TAGS } from "@/lib/constants";
 import { useGeolocation } from "@/lib/location";
-import { getUser } from "@/lib/services/auth";
+import { getUser, getSession } from "@/lib/services/auth";
 import type { User } from "@supabase/supabase-js";
 
 type FormState = "idle" | "uploading" | "submitting" | "analysing" | "done" | "error";
@@ -117,6 +117,19 @@ export function ReportForm() {
 
     setError(null);
 
+    // ── Extract session auth header ──────────────────────────────────────────
+    let authHeader: Record<string, string> = {};
+    if (isSupabaseConfigured()) {
+      try {
+        const session = await getSession();
+        if (session?.access_token) {
+          authHeader = { Authorization: `Bearer ${session.access_token}` };
+        }
+      } catch (err) {
+        console.warn("Could not retrieve session token:", err);
+      }
+    }
+
     // ── Step 1: Upload image if provided ──────────────────────────────────────
     let imageUrl: string | undefined;
     if (imageFile && isSupabaseConfigured()) {
@@ -126,6 +139,7 @@ export function ReportForm() {
         fd.append("image", imageFile);
         const uploadRes = await fetch("/api/reports/upload", {
           method: "POST",
+          headers: { ...authHeader },
           body: fd,
         });
         if (uploadRes.ok) {
@@ -159,15 +173,20 @@ export function ReportForm() {
 
       const res = await fetch("/api/reports", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...authHeader,
+        },
         body: JSON.stringify(payload),
       });
 
       if (!res.ok) {
-        const body = (await res.json().catch(() => ({}))) as {
-          error?: string;
-        };
-        throw new Error(body.error ?? `HTTP ${res.status}`);
+        const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+        const errMsg =
+          (body["detail"] as string) ||
+          (body["error"] as string) ||
+          `Submission failed (HTTP ${res.status})`;
+        throw new Error(errMsg);
       }
 
       const data = (await res.json()) as {
@@ -183,7 +202,10 @@ export function ReportForm() {
       if (reportId && imageUrl) {
         fetch(`/api/reports/${reportId}/analyse-image`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            ...authHeader,
+          },
           body: JSON.stringify({ image_url: imageUrl }),
         })
           .then((r) => r.json())

@@ -45,13 +45,23 @@ export async function POST(request: NextRequest) {
   // ── Auth check ──────────────────────────────────────────────────────────────
   let userId: string;
   try {
+    const authHeader = request.headers.get("authorization");
+    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7).trim() : null;
+
     const { createServerSupabaseClient } = await import("@/lib/supabase/server");
     const supabase = createServerSupabaseClient();
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-    if (authError || !user) {
+
+    let user = null;
+    if (token) {
+      const { data, error } = await supabase.auth.getUser(token);
+      if (!error && data?.user) user = data.user;
+    }
+    if (!user) {
+      const { data, error: authError } = await supabase.auth.getUser();
+      if (!authError && data?.user) user = data.user;
+    }
+
+    if (!user) {
       return NextResponse.json({ error: "Authentication required" }, { status: 401 });
     }
     userId = user.id;

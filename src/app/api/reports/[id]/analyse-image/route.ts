@@ -29,16 +29,40 @@ export async function POST(
 
   // 1. Authenticate user server-side
   let userId: string;
+  let token: string | null = null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let supabase: any;
   try {
+    const authHeader = request.headers.get("authorization");
+    if (authHeader && authHeader.startsWith("Bearer ")) {
+      token = authHeader.slice(7).trim();
+    }
+
     const { createServerSupabaseClient } = await import("@/lib/supabase/server");
     supabase = createServerSupabaseClient();
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
 
-    if (authError || !user) {
+    if (!token) {
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (sessionData.session?.access_token) {
+        token = sessionData.session.access_token;
+      }
+    }
+
+    let user = null;
+    if (token) {
+      const { data, error } = await supabase.auth.getUser(token);
+      if (!error && data?.user) {
+        user = data.user;
+      }
+    }
+    if (!user) {
+      const { data, error: authError } = await supabase.auth.getUser();
+      if (!authError && data?.user) {
+        user = data.user;
+      }
+    }
+
+    if (!user) {
       return NextResponse.json(
         { error: "Authentication required to analyse report image" },
         { status: 401 }
@@ -112,6 +136,7 @@ export async function POST(
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          ...(token ? { "Authorization": `Bearer ${token}` } : {}),
           "x-user-id": userId,
         },
         body: JSON.stringify({ image_url: body.image_url }),
