@@ -37,10 +37,11 @@ export async function signUp(
     };
   }
   const sb = await getClient();
-  const emailRedirectTo =
+  const origin =
     typeof window !== "undefined"
-      ? `${window.location.origin}/auth/callback`
-      : undefined;
+      ? window.location.origin
+      : "https://suraksha-gridx.vercel.app";
+  const emailRedirectTo = `${origin}/auth/callback`;
 
   const { data, error } = await sb.auth.signUp({
     email,
@@ -51,6 +52,33 @@ export async function signUp(
     },
   });
   return { user: data.user ?? null, session: data.session ?? null, error };
+}
+
+export async function resendConfirmation(
+  email: string
+): Promise<{ error: AuthError | null }> {
+  if (!configured()) {
+    return {
+      error: new AuthError(
+        "Supabase is not configured. Please provide NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY."
+      ),
+    };
+  }
+  const sb = await getClient();
+  const origin =
+    typeof window !== "undefined"
+      ? window.location.origin
+      : "https://suraksha-gridx.vercel.app";
+  const emailRedirectTo = `${origin}/auth/callback`;
+
+  const { error } = await sb.auth.resend({
+    type: "signup",
+    email,
+    options: {
+      emailRedirectTo,
+    },
+  });
+  return { error };
 }
 
 export async function signIn(

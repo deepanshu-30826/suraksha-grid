@@ -96,9 +96,11 @@ class HelpPointResponse(_Base):
     type: Literal["police", "hospital", "help"]
     latitude: float
     longitude: float
-    address: Optional[str]
-    phone: Optional[str]
-    open_24h: bool
+    address: Optional[str] = None
+    phone: Optional[str] = None
+    open_24h: bool = False
+    opening_hours: Optional[str] = None
+    distance_km: Optional[float] = None
 
 
 # ------------------------------------------------------------------ common

@@ -84,7 +84,20 @@ export interface SafetyReport {
   segmentId?: string;
 }
 export type HelpKind = "police" | "hospital" | "help";
-export interface HelpPoint { id: string; name: string; kind: HelpKind; distanceKm: number; open24h: boolean; x: number; y: number; lng: number; lat: number }
+export interface HelpPoint {
+  id: string;
+  name: string;
+  kind: HelpKind;
+  distanceKm: number;
+  open24h: boolean;
+  openingHours?: string;
+  address?: string;
+  phone?: string;
+  x: number;
+  y: number;
+  lng: number;
+  lat: number;
+}
 export interface UserProfile { name: string; email: string; initials: string; reports: number; stories: number }
 
 // Safety engine output types (mirroring backend Python dataclasses)

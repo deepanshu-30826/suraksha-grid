@@ -10,6 +10,8 @@ function LoginFormContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const redirect = searchParams.get("redirect") ?? searchParams.get("next") ?? "/";
+  const errorParam = searchParams.get("error");
+  const emailParam = searchParams.get("email");
 
   useEffect(() => {
     getUser().then((user) => {
@@ -26,7 +28,12 @@ function LoginFormContent() {
 
   return (
     <>
-      <AuthForm mode="login" onSuccess={handleSuccess} />
+      <AuthForm
+        mode="login"
+        initialError={errorParam}
+        initialEmail={emailParam}
+        onSuccess={handleSuccess}
+      />
       <p className="text-center text-sm text-muted">
         No account?{" "}
         <Link
