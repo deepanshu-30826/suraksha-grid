@@ -96,3 +96,33 @@ export function minDistanceToPolylineMeters(p: LngLat, polyline: LngLat[]): numb
   }
   return minDist;
 }
+
+/**
+ * Detects whether coordinates form a synthetic straight-line bounding-box outline
+ * or axis-aligned grid rectangle rather than genuine road-following geometry.
+ */
+export function isSyntheticBoundingGeometry(coords: LngLat[]): boolean {
+  if (!coords || coords.length < 2) return true;
+
+  // Exactly 2 points that are purely horizontal or vertical (axis-aligned grid lines)
+  if (coords.length === 2) {
+    const [p1, p2] = coords;
+    const isHorizontal = Math.abs(p1[1] - p2[1]) < 0.00001;
+    const isVertical = Math.abs(p1[0] - p2[0]) < 0.00001;
+    if (isHorizontal || isVertical) return true;
+  }
+
+  // Exactly 3 points forming a 90-degree axis-aligned bounding box corner
+  if (coords.length === 3) {
+    const [p1, p2, p3] = coords;
+    const seg1Vertical = Math.abs(p1[0] - p2[0]) < 0.00001;
+    const seg1Horizontal = Math.abs(p1[1] - p2[1]) < 0.00001;
+    const seg2Vertical = Math.abs(p2[0] - p3[0]) < 0.00001;
+    const seg2Horizontal = Math.abs(p2[1] - p3[1]) < 0.00001;
+    if ((seg1Vertical && seg2Horizontal) || (seg1Horizontal && seg2Vertical)) {
+      return true;
+    }
+  }
+
+  return false;
+}

@@ -126,13 +126,16 @@ function markerElement(kind: MarkerKind, label: string): HTMLElement {
 }
 
 function toGeoJSON(segs: Segment[], selectedId?: string) {
+  const features = segs.map((s) => ({
+    type: "Feature" as const,
+    properties: { id: s.id, color: LEVELS[levelOf(s.score)].hex, selected: s.id === selectedId ? 1 : 0 },
+    geometry: { type: "LineString" as const, coordinates: s.coords as number[][] },
+  }));
+  // Ensure selected road segment is drawn on top
+  features.sort((a, b) => (a.properties.selected || 0) - (b.properties.selected || 0));
   return {
     type: "FeatureCollection" as const,
-    features: segs.map((s) => ({
-      type: "Feature" as const,
-      properties: { id: s.id, color: LEVELS[levelOf(s.score)].hex, selected: s.id === selectedId ? 1 : 0 },
-      geometry: { type: "LineString" as const, coordinates: s.coords as number[][] },
-    })),
+    features,
   };
 }
 

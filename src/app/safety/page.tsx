@@ -6,21 +6,26 @@ import { Legend } from "@/components/safety/score";
 import { SafetyLens } from "@/components/safety/safety-lens";
 import { Chip, EmptyState, Skeleton } from "@/components/ui/card";
 import { getSegments } from "@/lib/services/segments";
+import { fetchCrimeGeoJSON, type CrimeGeoJSON } from "@/lib/services/crime";
 import type { Segment } from "@/types";
 
 export default function SafetyPage() {
   const [segments, setSegments] = useState<Segment[]>([]);
+  const [crimeGeoJSON, setCrimeGeoJSON] = useState<CrimeGeoJSON | null>(null);
   const [sel, setSel] = useState("");
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let alive = true;
 
-    getSegments()
-      .then((data) => {
+    Promise.all([getSegments(), fetchCrimeGeoJSON()])
+      .then(([segmentData, crimeData]) => {
         if (!alive) return;
-        setSegments(data);
-        const preferred = data.find((segment) => segment.score < 50) ?? data[0];
+        setSegments(segmentData);
+        if (crimeData && crimeData.features.length > 0) {
+          setCrimeGeoJSON(crimeData);
+        }
+        const preferred = segmentData.find((segment) => segment.score < 50) ?? segmentData[0];
         setSel(preferred?.id ?? "");
         setLoading(false);
       })
@@ -33,8 +38,23 @@ export default function SafetyPage() {
     };
   }, []);
 
+  const [filterQuery, setFilterQuery] = useState("");
+
   const onSelect = useCallback((id: string) => setSel(id), []);
   const selected = segments.find((segment) => segment.id === sel);
+
+  // Filter segments for chip list by name
+  const filteredSegments = segments.filter((s) =>
+    !filterQuery ? true : s.name.toLowerCase().includes(filterQuery.toLowerCase())
+  );
+  // Ensure selected segment is present in visible chips list
+  const visibleChips = (() => {
+    const list = filteredSegments.slice(0, 25);
+    if (selected && !list.some((s) => s.id === selected.id)) {
+      list.unshift(selected);
+    }
+    return list;
+  })();
 
   return (
     <MapLayout
@@ -45,6 +65,8 @@ export default function SafetyPage() {
             segments={segments}
             selectedSegmentId={sel}
             onSelectSegment={onSelect}
+            crimeGeoJSON={crimeGeoJSON}
+            showCrimeOverlay={true}
           />
           <div className="pointer-events-none absolute inset-x-3 top-3 z-[5]">
             <Legend />
@@ -61,7 +83,9 @@ export default function SafetyPage() {
           <div>
             <h1 className="text-xl font-bold">Safety Lens</h1>
             <p className="text-sm text-muted">
-              Tap a road on the map or choose below
+              {segments.length
+                ? `Analyzing ${segments.length} verified Jaipur & Alwar road segments`
+                : "Road-level safety intelligence"}
             </p>
           </div>
 
@@ -72,24 +96,38 @@ export default function SafetyPage() {
             </div>
           ) : segments.length ? (
             <>
-              <div className="flex gap-2 overflow-x-auto pb-1">
-                {segments.map((segment) => (
-                  <Chip
-                    key={segment.id}
-                    active={segment.id === sel}
-                    onClick={() => setSel(segment.id)}
-                    className="shrink-0"
-                  >
-                    {segment.name}
-                  </Chip>
-                ))}
+              <div className="space-y-2">
+                <input
+                  type="text"
+                  placeholder="Filter roads (e.g. Amer Road, Tonk, Station)…"
+                  value={filterQuery}
+                  onChange={(e) => setFilterQuery(e.target.value)}
+                  className="w-full rounded-xl border border-divider bg-card px-3 py-1.5 text-xs text-foreground placeholder:text-muted focus:outline-none focus:ring-1 focus:ring-primary"
+                />
+                <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
+                  {visibleChips.map((segment) => (
+                    <Chip
+                      key={segment.id}
+                      active={segment.id === sel}
+                      onClick={() => setSel(segment.id)}
+                      className="shrink-0 text-xs"
+                    >
+                      {segment.name}
+                    </Chip>
+                  ))}
+                  {filteredSegments.length > 25 && (
+                    <span className="self-center px-1 text-[10px] text-muted whitespace-nowrap">
+                      +{filteredSegments.length - 25} more
+                    </span>
+                  )}
+                </div>
               </div>
               <SafetyLens segment={selected} />
             </>
           ) : (
             <EmptyState
-              title="Safety data unavailable"
-              hint="Check your Supabase connection and try again."
+              title="No verified road segments available"
+              hint="Road-level safety intelligence requires verified road network geometries. Historical NCRB district crime data is active on the map."
             />
           )}
         </div>

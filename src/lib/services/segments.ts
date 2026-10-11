@@ -1,7 +1,7 @@
 import type { Segment } from "@/types";
 import { LEVELS } from "@/lib/constants";
 import { levelOf } from "@/lib/utils";
-import { lineStringCoords } from "@/lib/map/geometry";
+import { lineStringCoords, isSyntheticBoundingGeometry } from "@/lib/map/geometry";
 import { apiGet } from "@/lib/services/api";
 
 function configured() {
@@ -9,6 +9,42 @@ function configured() {
     process.env.NEXT_PUBLIC_SUPABASE_URL &&
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
   );
+}
+
+const DEMO_ROAD_NAMES = new Set([
+  "Ring Road",
+  "MG Road",
+  "Market Lane",
+  "Station Link",
+  "Canal Road",
+  "Temple Street",
+  "Civil Lines",
+  "Garden Path",
+]);
+
+/**
+ * Identify synthetic bounding-box or demo seed segments that do not
+ * represent verified, road-following physical geometries.
+ */
+export function isSyntheticSegment(segment: {
+  id?: string;
+  name?: string;
+  coords?: unknown;
+}): boolean {
+  if (!segment) return true;
+  // Demo seed UUID prefix from 006_demo_seed.sql
+  if (segment.id && segment.id.startsWith("00000000-0000-0000-0000-")) return true;
+  // Synthetic rectangular bounding-box coordinates
+  if (Array.isArray(segment.coords) && isSyntheticBoundingGeometry(segment.coords as any)) {
+    return true;
+  }
+  // Hardcoded demo roads when lacking verified multi-point road curvature
+  if (segment.name && DEMO_ROAD_NAMES.has(segment.name)) {
+    if (!Array.isArray(segment.coords) || (segment.coords as any[]).length <= 3) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function rowToSegment(row: Record<string, unknown>): Segment {
@@ -21,12 +57,12 @@ function rowToSegment(row: Record<string, unknown>): Segment {
     path:          "",
     coords,
     score,
-    confidence:    Number(row["confidence_score"] ?? 70),
-    lighting:      Number(row["lighting_score"] ?? 50),
-    activity:      Number(row["pedestrian_activity_score"] ?? 50),
+    confidence:    row["confidence_score"] != null ? Number(row["confidence_score"]) : 0,
+    lighting:      row["lighting_score"] != null ? Number(row["lighting_score"]) : 0,
+    activity:      row["pedestrian_activity_score"] != null ? Number(row["pedestrian_activity_score"]) : 0,
     emergency:     (row["emergency_access_label"] as Segment["emergency"]) ?? "Fair",
     timeCondition: String(row["time_condition"] ?? ""),
-    explanation:   String(row["explanation"] ?? LEVELS[levelOf(score)].label),
+    explanation:   String(row["explanation"] ?? (LEVELS[levelOf(score)]?.label ?? "Moderate")),
     observations:  [],
     riskFactors:   [],
     positiveFactors: [],
@@ -46,28 +82,24 @@ export async function getSegments(): Promise<Segment[]> {
   try {
     const rows = await apiGet<Record<string, unknown>[]>("segments");
     const mapped = rows.map(rowToSegment);
-
-    if (!mapped.length) throw new Error("No road segments in database yet");
-    if (!mapped.some((segment) => segment.coords.length >= 2)) {
-      throw new Error("Road segment geometry could not be read from FastAPI");
-    }
-    return mapped;
+    const genuine = mapped.filter((segment) => !isSyntheticSegment(segment) && segment.coords.length >= 2);
+    return genuine;
   } catch (apiError) {
     console.warn("[segments] FastAPI read failed, trying direct Supabase:", apiError);
 
     try {
       const { createClient } = await import("@/lib/supabase/client");
       const supabase = createClient();
-      const { data, error } = await supabase.from("road_segments").select(SEGMENT_FIELDS);
+      const { data, error } = await supabase
+        .from("road_segments")
+        .select(SEGMENT_FIELDS)
+        .limit(3000);
       if (error) throw error;
 
       const rows = (data ?? []) as unknown as Record<string, unknown>[];
       const mapped = rows.map(rowToSegment);
-      if (!mapped.length) throw new Error("No road segments in database yet");
-      if (!mapped.some((segment) => segment.coords.length >= 2)) {
-        throw new Error("Road segment geometry could not be read from Supabase");
-      }
-      return mapped;
+      const genuine = mapped.filter((segment) => !isSyntheticSegment(segment) && segment.coords.length >= 2);
+      return genuine;
     } catch (err) {
       console.warn("[segments] Supabase unavailable:", err);
       return [];
@@ -80,7 +112,8 @@ export async function getSegmentById(id: string): Promise<Segment | undefined> {
 
   try {
     const segment = await apiGet<Record<string, unknown>>(`segments/${id}`);
-    return rowToSegment(segment);
+    const seg = rowToSegment(segment);
+    return isSyntheticSegment(seg) ? undefined : seg;
   } catch {
     try {
       const { createClient } = await import("@/lib/supabase/client");
@@ -91,9 +124,9 @@ export async function getSegmentById(id: string): Promise<Segment | undefined> {
         .eq("id", id)
         .single();
       if (error) throw error;
-      return data
-        ? rowToSegment(data as unknown as Record<string, unknown>)
-        : undefined;
+      if (!data) return undefined;
+      const seg = rowToSegment(data as unknown as Record<string, unknown>);
+      return isSyntheticSegment(seg) ? undefined : seg;
     } catch {
       return undefined;
     }

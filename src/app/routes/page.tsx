@@ -242,6 +242,29 @@ export default function RoutesPage() {
     [userLngLat, generateRealRoutes, profile]
   );
 
+  const handleSearchSubmit = useCallback(async () => {
+    if (searchResults.length > 0) {
+      handleSelectSearchResult(searchResults[0]);
+      return;
+    }
+    const q = searchQuery.trim();
+    if (q.length >= 2) {
+      setIsSearching(true);
+      try {
+        const results = await searchDestinations(q, userLngLat);
+        setIsSearching(false);
+        if (results.length > 0) {
+          setSearchResults(results);
+          handleSelectSearchResult(results[0]);
+        } else {
+          setShowSuggestions(true);
+        }
+      } catch {
+        setIsSearching(false);
+      }
+    }
+  }, [searchResults, searchQuery, userLngLat, handleSelectSearchResult]);
+
   const handleProfileChange = useCallback(
     (newProfile: "foot-walking" | "driving-car" | "cycling-regular") => {
       setProfile(newProfile);
@@ -420,7 +443,15 @@ export default function RoutesPage() {
           {/* Search Destination Box */}
           <div className="relative">
             <div className="flex items-center gap-2 rounded-xl border border-line bg-white px-3 shadow-sm focus-within:border-brand">
-              <Search className="h-4 w-4 shrink-0 text-muted" />
+              <button
+                type="button"
+                aria-label="Search destination"
+                title="Search"
+                onClick={() => void handleSearchSubmit()}
+                className="p-1 text-muted hover:text-brand transition cursor-pointer"
+              >
+                <Search className="h-4 w-4 shrink-0" />
+              </button>
               <input
                 aria-label="Search destination"
                 placeholder="Search destination (e.g. Cyber Hub, Metro…)"
@@ -431,6 +462,12 @@ export default function RoutesPage() {
                 }}
                 onFocus={() => {
                   if (searchResults.length > 0) setShowSuggestions(true);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    void handleSearchSubmit();
+                  }
                 }}
                 className="h-10 flex-1 bg-transparent text-sm outline-none"
               />

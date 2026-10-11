@@ -69,6 +69,8 @@ export default function MapPage() {
   const [sel, setSel] = useState("");
   const [segments, setSegments] = useState<Segment[]>([]);
   const [reports, setReports] = useState<SafetyReport[]>([]);
+  const [liveAlert, setLiveAlert] = useState<SafetyReport | null>(null);
+  const liveAlertTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [alertCount, setAlertCount] = useState(0);
   const [anomaly, setAnomaly] = useState<AnomalyResult | null>(null);
   const [showEmergency, setShowEmergency] = useState(false);
@@ -152,6 +154,13 @@ export default function MapPage() {
 
         setReports((previous) => [report, ...previous].slice(0, 50));
         setAlertCount((count) => count + 1);
+
+        // Show ephemeral banner ONLY for new incoming live reports during this session
+        setLiveAlert(report);
+        if (liveAlertTimer.current) clearTimeout(liveAlertTimer.current);
+        liveAlertTimer.current = setTimeout(() => {
+          setLiveAlert(null);
+        }, 6000);
 
         const affectedSegId = row.road_segment_id;
         if (!affectedSegId) return;
@@ -243,6 +252,13 @@ export default function MapPage() {
       setSearchQuery(dest.name);
       setShowSuggestions(false);
 
+      // Immediately focus map on genuine search result
+      window.dispatchEvent(
+        new CustomEvent("suraksha-grid:recenter", {
+          detail: { lng: dest.coordinates[0], lat: dest.coordinates[1] },
+        }),
+      );
+
       if (userLngLat) {
         void calculateRoute(userLngLat, dest.coordinates);
       } else {
@@ -259,6 +275,29 @@ export default function MapPage() {
     },
     [userLngLat, requestLocation, calculateRoute]
   );
+
+  const handleSearchSubmit = useCallback(async () => {
+    if (searchResults.length > 0) {
+      handleSelectDestination(searchResults[0]);
+      return;
+    }
+    const q = searchQuery.trim();
+    if (q.length >= 2) {
+      setIsSearching(true);
+      try {
+        const results = await searchDestinations(q, userLngLat);
+        setIsSearching(false);
+        if (results.length > 0) {
+          setSearchResults(results);
+          handleSelectDestination(results[0]);
+        } else {
+          setShowSuggestions(true);
+        }
+      } catch {
+        setIsSearching(false);
+      }
+    }
+  }, [searchResults, searchQuery, userLngLat, handleSelectDestination]);
 
   // Auto-search from ?to= query parameter
   useEffect(() => {
@@ -429,10 +468,18 @@ export default function MapPage() {
               {/* Destination Search Box */}
               <div className="relative">
                 <div className="flex items-center gap-2 rounded-2xl bg-white px-3 shadow-card">
-                  <Search className="h-4 w-4 text-muted" />
+                  <button
+                    type="button"
+                    aria-label="Search destination"
+                    title="Search"
+                    onClick={() => void handleSearchSubmit()}
+                    className="p-1 text-muted hover:text-brand transition cursor-pointer"
+                  >
+                    <Search className="h-4 w-4" />
+                  </button>
                   <input
                     aria-label="Search destination"
-                    placeholder="Search destination"
+                    placeholder="Search destination (e.g. Cyber Hub, Metro…)"
                     value={searchQuery}
                     onChange={(e) => {
                       setSearchQuery(e.target.value);
@@ -440,6 +487,12 @@ export default function MapPage() {
                     }}
                     onFocus={() => {
                       if (searchResults.length > 0) setShowSuggestions(true);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        void handleSearchSubmit();
+                      }
                     }}
                     className="h-12 flex-1 bg-transparent text-sm outline-none"
                   />
@@ -663,13 +716,13 @@ export default function MapPage() {
               <LocateFixed className="h-5 w-5 text-brand" />
             </button>
 
-            {reports[0] && (
+            {liveAlert && (
               <div className="animate-rise pointer-events-none absolute inset-x-3 top-20 z-[6] flex items-start gap-2 rounded-2xl bg-ink p-3 text-sm text-white shadow-sheet lg:left-auto lg:right-4 lg:top-4 lg:w-72">
                 <Bell className="mt-0.5 h-4 w-4 shrink-0 text-elevated" />
                 <div>
-                  <p className="font-semibold">Recent report</p>
+                  <p className="font-semibold">New community report</p>
                   <p className="text-white/70">
-                    {reports[0].tag} · {timeAgo(reports[0].minutesAgo)}
+                    {liveAlert.tag} · Just now
                   </p>
                 </div>
               </div>

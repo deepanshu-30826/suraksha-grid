@@ -22,6 +22,7 @@ async def get_all_segments(db: "Client") -> list[dict]:
             "emergency_access_label,time_condition,explanation,"
             "recent_reports_count,updated_at,geometry::json"
         )
+        .limit(3000)
         .execute()
     )
     return resp.data or []

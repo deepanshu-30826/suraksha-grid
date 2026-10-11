@@ -8,15 +8,31 @@ import { cn } from "@/lib/utils";
 export function SafetyLens({ segment }: { segment?: Segment }) {
   if (!segment) return (
     <Card className="text-center text-sm text-muted">
-      Tap a road on the map to see its Safety Lens.
+      Select a verified road on the map to see its Safety Lens.
     </Card>
   );
 
   const facts = [
-    { Icon: Gauge, l: "Confidence",           v: `${segment.confidence}` },
-    { Icon: Users, l: "Pedestrian activity",   v: segment.activity > 70 ? "Busy" : "Quiet" },
-    { Icon: Siren, l: "Emergency access",      v: segment.emergency },
-    { Icon: FileText, l: "Recent reports",     v: `${segment.recentReportCount ?? segment.observations.length}` },
+    {
+      Icon: Gauge,
+      l: "Confidence",
+      v: segment.confidence > 0 ? `${segment.confidence}%` : "Unrated",
+    },
+    {
+      Icon: Users,
+      l: "Pedestrian activity",
+      v: segment.activity > 70 ? "Busy" : segment.activity > 30 ? "Moderate" : segment.activity > 0 ? "Quiet" : "Unmeasured",
+    },
+    {
+      Icon: Siren,
+      l: "Emergency access",
+      v: segment.emergency || "Unmeasured",
+    },
+    {
+      Icon: FileText,
+      l: "Recent reports",
+      v: `${segment.recentReportCount ?? segment.observations.length}`,
+    },
   ];
 
   const risks     = segment.riskFactors     ?? [];
@@ -39,10 +55,22 @@ export function SafetyLens({ segment }: { segment?: Segment }) {
         {segment.explanation}
       </p>
 
-      {/* Meters */}
+      {/* Meters / Indicators */}
       <div className="grid grid-cols-2 gap-4">
-        <Meter label="Lighting"            value={segment.lighting} />
-        <Meter label="Pedestrian activity" value={segment.activity} />
+        {segment.lighting > 0 ? (
+          <Meter label="Lighting" value={segment.lighting} />
+        ) : (
+          <div className="rounded-xl border border-line bg-surface p-2 text-xs text-muted">
+            <span className="font-semibold text-ink">Lighting:</span> Unmeasured baseline
+          </div>
+        )}
+        {segment.activity > 0 ? (
+          <Meter label="Pedestrian activity" value={segment.activity} />
+        ) : (
+          <div className="rounded-xl border border-line bg-surface p-2 text-xs text-muted">
+            <span className="font-semibold text-ink">Activity:</span> Unmeasured baseline
+          </div>
+        )}
       </div>
 
       {/* Fact grid */}
@@ -54,6 +82,15 @@ export function SafetyLens({ segment }: { segment?: Segment }) {
             <p className="text-muted leading-tight">{l}</p>
           </div>
         ))}
+      </div>
+
+      {/* Evidence Sources Breakdown */}
+      <div className="rounded-xl border border-line bg-surface p-3 text-xs text-muted space-y-1">
+        <p className="font-semibold text-ink text-xs mb-1">Evidence Sources</p>
+        <p>• Infrastructure indicators: {segment.lighting > 0 ? `Lighting score ${segment.lighting}/100` : "Baseline estimate"}</p>
+        <p>• Pedestrian activity: {segment.activity > 0 ? `Activity score ${segment.activity}/100` : "Baseline estimate"}</p>
+        <p>• Community verification: {segment.recentReportCount ? `${segment.recentReportCount} verified reports` : "No community reports on record"}</p>
+        <p>• Emergency accessibility: {segment.emergency || "Fair proximity"}</p>
       </div>
 
       {/* Risk factors */}
@@ -85,11 +122,12 @@ export function SafetyLens({ segment }: { segment?: Segment }) {
       )}
 
       {/* Time of day condition */}
-      <p className="flex items-start gap-2 rounded-xl border border-line px-3 py-2.5 text-sm text-muted">
-        <Clock3 className="mt-0.5 h-4 w-4 shrink-0 text-brand" />
-        <span><span className="font-semibold text-ink">Right now: </span>{segment.timeCondition}</span>
-      </p>
-
+      {segment.timeCondition && (
+        <p className="flex items-start gap-2 rounded-xl border border-line px-3 py-2.5 text-sm text-muted">
+          <Clock3 className="mt-0.5 h-4 w-4 shrink-0 text-brand" />
+          <span><span className="font-semibold text-ink">Right now: </span>{segment.timeCondition}</span>
+        </p>
+      )}
 
       {/* Historical crime evidence — shown only when data is available */}
       {segment.historicalEvidence && (
@@ -125,9 +163,14 @@ export function SafetyLens({ segment }: { segment?: Segment }) {
       )}
 
       {/* Score disclaimer */}
-      <p className="text-[11px] text-muted/70">
-        Safety Score is an index (0–100), not a probability. Confidence reflects data availability, not safety level.
-      </p>
+      <div className="space-y-1 text-[11px] text-muted/70">
+        <p>
+          Safety Score is an index (0–100), not a crime probability. Confidence reflects data availability, distinct from safety score.
+        </p>
+        <p>
+          Absence of reported community incidents does not constitute evidence or guarantee of safety.
+        </p>
+      </div>
 
       {/* Recent reports */}
       {segment.observations.length > 0 && (

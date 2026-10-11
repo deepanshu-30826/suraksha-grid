@@ -126,3 +126,23 @@ class TestSpatialMatching:
         ]
         length = compute_linestring_length_km(coords)
         assert 0.8 < length < 1.2
+
+    def test_empty_and_disjoint_segments_handled_defensively(self):
+        route = [
+            [77.0200, 28.4500],
+            [77.0300, 28.4500],
+        ]
+        # Disjoint distant segments should yield 0 matches without error
+        distant_segments = [
+            {
+                "id": "distant-1",
+                "safety_score": 70,
+                "confidence_score": 60,
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": [[77.5000, 28.9000], [77.5100, 28.9000]],
+                },
+            }
+        ]
+        matched = match_road_segments(route, distant_segments)
+        assert matched == []
