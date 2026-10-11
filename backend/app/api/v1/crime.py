@@ -16,7 +16,9 @@ from __future__ import annotations
 from uuid import UUID
 from pathlib import Path
 import json
-from fastapi import APIRouter, Depends, Response
+import logging
+import os
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 from typing import Optional
 
@@ -25,10 +27,60 @@ from app.services.crime.spatial import route_crime_intersections, check_dataset_
 from app.services.crime.evidence import aggregate
 from app.services.crime.config import SOURCE_DISCLAIMER, UNAVAILABLE_MESSAGE
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
 
 # In-memory cache for processed GeoJSON bytes
 _CRIME_GEOJSON_BYTES: bytes | None = None
+
+
+def clear_crime_geojson_cache() -> None:
+    """Clear cached GeoJSON bytes (primarily for tests)."""
+    global _CRIME_GEOJSON_BYTES
+    _CRIME_GEOJSON_BYTES = None
+
+
+def resolve_crime_geojson_path() -> Path | None:
+    """
+    Resolve the filesystem path to the processed NCRB districts GeoJSON file.
+    Evaluates paths deterministically across local development, tests, and
+    deployed Vercel serverless environments independently of working directory.
+    """
+    # 1. Explicit env var override
+    env_override = os.environ.get("CRIME_GEOJSON_PATH")
+    if env_override:
+        p = Path(env_override)
+        if p.is_file():
+            return p.resolve()
+
+    # 2. Module-relative paths:
+    # __file__ = <backend_root>/app/api/v1/crime.py
+    module_dir = Path(__file__).resolve().parent
+    app_dir = module_dir.parent.parent
+    backend_root = app_dir.parent
+    repo_root = backend_root.parent
+
+    candidates = [
+        # In deployed Vercel bundle or backend directory
+        backend_root / "data" / "crime" / "processed" / "ncrb_districts_geojson.json",
+        app_dir / "data" / "crime" / "processed" / "ncrb_districts_geojson.json",
+        # Monorepo root
+        repo_root / "data" / "crime" / "processed" / "ncrb_districts_geojson.json",
+        # Current working directory fallbacks
+        Path.cwd() / "data" / "crime" / "processed" / "ncrb_districts_geojson.json",
+        Path.cwd() / "backend" / "data" / "crime" / "processed" / "ncrb_districts_geojson.json",
+        Path.cwd() / ".." / "data" / "crime" / "processed" / "ncrb_districts_geojson.json",
+    ]
+
+    for c in candidates:
+        try:
+            if c.is_file():
+                return c.resolve()
+        except Exception:
+            continue
+
+    return None
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
@@ -200,30 +252,42 @@ async def crime_geojson():
             headers={"Cache-Control": "public, max-age=3600"},
         )
 
-    # Search possible paths for processed GeoJSON
-    candidates = [
-        Path("data/crime/processed/ncrb_districts_geojson.json"),
-        Path("../data/crime/processed/ncrb_districts_geojson.json"),
-        Path(__file__).resolve().parent.parent.parent.parent.parent / "data" / "crime" / "processed" / "ncrb_districts_geojson.json",
-    ]
+    geojson_path = resolve_crime_geojson_path()
+    if not geojson_path:
+        logger.error(
+            "NCRB district crime GeoJSON file not found. Checked backend data directory, app directory, and repo root."
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Historical crime GeoJSON dataset unavailable: processed data file not found",
+        )
 
-    for p in candidates:
-        if p.exists():
-            try:
-                content = p.read_bytes()
-                _CRIME_GEOJSON_BYTES = content
-                return Response(
-                    content=content,
-                    media_type="application/json",
-                    headers={"Cache-Control": "public, max-age=3600"},
-                )
-            except Exception:
-                pass
+    try:
+        content = geojson_path.read_bytes()
+        try:
+            parsed = json.loads(content)
+            features = parsed.get("features", [])
+            if not features:
+                logger.error("NCRB crime GeoJSON at %s contains 0 features", geojson_path)
+                raise ValueError("GeoJSON contains 0 features")
+        except Exception as parse_err:
+            logger.error("Corrupt or invalid NCRB crime GeoJSON at %s: %s", geojson_path, parse_err)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Historical crime GeoJSON data file is invalid: {parse_err}",
+            ) from parse_err
 
-    # Empty fallback FeatureCollection
-    empty_fc = json.dumps({"type": "FeatureCollection", "features": []}).encode("utf-8")
-    return Response(
-        content=empty_fc,
-        media_type="application/json",
-        headers={"Cache-Control": "no-cache"},
-    )
+        _CRIME_GEOJSON_BYTES = content
+        return Response(
+            content=content,
+            media_type="application/json",
+            headers={"Cache-Control": "public, max-age=3600"},
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to read NCRB crime GeoJSON from %s: %s", geojson_path, exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to load historical crime GeoJSON: {exc}",
+        ) from exc

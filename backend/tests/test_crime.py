@@ -584,14 +584,16 @@ class TestNCRBCombinedDataset:
     def test_crime_geojson_endpoint(self):
         from fastapi.testclient import TestClient
         from app.main import app
+        from app.api.v1.crime import clear_crime_geojson_cache
 
+        clear_crime_geojson_cache()
         client = TestClient(app)
         resp = client.get("/api/v1/crime/geojson")
         assert resp.status_code == 200
         data = resp.json()
         assert data.get("type") == "FeatureCollection"
         assert "features" in data
-        assert len(data["features"]) > 0
+        assert len(data["features"]) == 614
         f0 = data["features"][0]
         assert "properties" in f0
         assert "district" in f0["properties"]
@@ -599,3 +601,48 @@ class TestNCRBCombinedDataset:
         assert f0["properties"]["year"] == 2023
         assert f0["properties"]["source"] == "NCRB"
         assert "geometry" in f0
+
+    def test_crime_geojson_missing_file_honest_503(self, monkeypatch):
+        from fastapi.testclient import TestClient
+        from app.main import app
+        import app.api.v1.crime as crime_mod
+
+        crime_mod.clear_crime_geojson_cache()
+        monkeypatch.setattr(crime_mod, "resolve_crime_geojson_path", lambda: None)
+
+        client = TestClient(app)
+        resp = client.get("/api/v1/crime/geojson")
+        assert resp.status_code == 503
+        data = resp.json()
+        assert "detail" in data
+        assert "unavailable" in data["detail"].lower()
+        crime_mod.clear_crime_geojson_cache()
+
+    def test_crime_geojson_empty_features_file_honest_500(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        from app.main import app
+        import app.api.v1.crime as crime_mod
+
+        empty_file = tmp_path / "empty_districts.json"
+        empty_file.write_text(json.dumps({"type": "FeatureCollection", "features": []}), encoding="utf-8")
+
+        crime_mod.clear_crime_geojson_cache()
+        monkeypatch.setattr(crime_mod, "resolve_crime_geojson_path", lambda: empty_file)
+
+        client = TestClient(app)
+        resp = client.get("/api/v1/crime/geojson")
+        assert resp.status_code == 500
+        data = resp.json()
+        assert "detail" in data
+        crime_mod.clear_crime_geojson_cache()
+
+    def test_backend_bundle_packaging_includes_processed_geojson(self):
+        """Verify the processed GeoJSON file is bundled inside backend/data/crime/processed/."""
+        backend_file = Path(__file__).resolve().parent.parent / "data" / "crime" / "processed" / "ncrb_districts_geojson.json"
+        assert backend_file.exists(), f"Backend deployment file missing: {backend_file}"
+        assert backend_file.stat().st_size > 1_000_000, "GeoJSON file unexpectedly small"
+
+        with open(backend_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        assert data.get("type") == "FeatureCollection"
+        assert len(data.get("features", [])) == 614

@@ -158,6 +158,10 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "ncrb_districts_geojson.json"
 
+    backend_out_dir = root / "backend" / "data" / "crime" / "processed"
+    backend_out_dir.mkdir(parents=True, exist_ok=True)
+    backend_out_path = backend_out_dir / "ncrb_districts_geojson.json"
+
     if not boundary_path.exists():
         logger.error("Boundary file not found: %s", boundary_path)
         return 1
@@ -269,8 +273,11 @@ def main():
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(fc, f, separators=(",", ":"), ensure_ascii=False)
 
+    with open(backend_out_path, "w", encoding="utf-8") as f:
+        json.dump(fc, f, separators=(",", ":"), ensure_ascii=False)
+
     size_mb = out_path.stat().st_size / (1024 * 1024)
-    logger.info("Wrote %d features to %s (%.2f MB)", len(out_features), out_path, size_mb)
+    logger.info("Wrote %d features to %s and %s (%.2f MB)", len(out_features), out_path, backend_out_path, size_mb)
     return 0
 
 

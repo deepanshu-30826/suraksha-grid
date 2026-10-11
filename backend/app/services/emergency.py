@@ -128,7 +128,7 @@ async def _send_resend_email(
                 "https://api.resend.com/emails",
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                 json={
-                    "from":    "Suraksha Grid <alerts@surakshagrid.app>",
+                    "from": "Suraksha Grid <onboarding@resend.dev>",
                     "to":      [to],
                     "subject": subject,
                     "text":    body,
