@@ -72,6 +72,7 @@ def test_help_mocked_overpass_returns_genuine_places(monkeypatch):
     ]
 
     import app.services.help as help_service
+    monkeypatch.setattr(help_service, "_query_nominatim", lambda lat, lng, rad: [])
     monkeypatch.setattr(help_service, "_query_overpass", lambda q: sample_elements)
 
     resp = client.get("/api/v1/help?lat=28.4595&lng=77.0266")
@@ -103,10 +104,38 @@ def test_help_mocked_overpass_returns_genuine_places(monkeypatch):
     assert "Canal Road Help Point" not in names
 
 
+def test_help_nominatim_parsing(monkeypatch):
+    """Test Nominatim results parsing and sorting."""
+    clear_help_cache()
+    import app.services.help as help_service
+    sample_nom = [
+        {
+            "id": "11111111-1111-1111-1111-111111111111",
+            "name": "Local Police Post",
+            "type": "police",
+            "latitude": 28.4600,
+            "longitude": 77.0270,
+            "address": "Main Road, Gurugram",
+            "phone": None,
+            "open_24h": True,
+            "opening_hours": "Open 24h",
+            "distance_km": 0.12,
+        }
+    ]
+    monkeypatch.setattr(help_service, "_query_nominatim", lambda lat, lng, rad: sample_nom)
+
+    resp = client.get("/api/v1/help?lat=28.4595&lng=77.0266")
+    assert resp.status_code == 200
+    places = resp.json()
+    assert len(places) == 1
+    assert places[0]["name"] == "Local Police Post"
+
+
 def test_help_empty_results_when_overpass_returns_nothing(monkeypatch):
     """When no genuine places exist within radius, return empty list honestly."""
     clear_help_cache()
     import app.services.help as help_service
+    monkeypatch.setattr(help_service, "_query_nominatim", lambda lat, lng, rad: [])
     monkeypatch.setattr(help_service, "_query_overpass", lambda q: [])
 
     resp = client.get("/api/v1/help?lat=12.34&lng=56.78")
