@@ -148,6 +148,238 @@ class TestEmergencyService:
         assert result.location_available is True
 
 
+class TestVoiceMessageEmergency:
+    def test_voice_attachment_validation_valid_webm(self):
+        import base64
+        from app.services.emergency import validate_and_prepare_voice_attachment
+        sample_audio = b"\x1a\x45\xdf\xa3dummy-webm-audio-bytes"
+        b64 = base64.b64encode(sample_audio).decode("ascii")
+        att, err = validate_and_prepare_voice_attachment(b64, mime_type="audio/webm")
+        assert err is None
+        assert att is not None
+        assert att["filename"].endswith(".webm")
+        assert att["content_type"] == "audio/webm"
+        assert base64.b64decode(att["content"]) == sample_audio
+
+    def test_voice_attachment_validation_data_url(self):
+        import base64
+        from app.services.emergency import validate_and_prepare_voice_attachment
+        sample_audio = b"OggSdummy-ogg-audio-bytes"
+        b64 = "data:audio/ogg;base64," + base64.b64encode(sample_audio).decode("ascii")
+        att, err = validate_and_prepare_voice_attachment(b64)
+        assert err is None
+        assert att is not None
+        assert att["filename"].endswith(".ogg")
+        assert att["content_type"] == "audio/ogg"
+        assert base64.b64decode(att["content"]) == sample_audio
+
+    def test_voice_attachment_validation_missing_audio(self):
+        from app.services.emergency import validate_and_prepare_voice_attachment
+        att, err = validate_and_prepare_voice_attachment(None)
+        assert att is None
+        assert err is None
+
+        att2, err2 = validate_and_prepare_voice_attachment("")
+        assert att2 is None
+        assert "empty" in (err2 or "")
+
+    def test_voice_attachment_validation_unsupported_mime(self):
+        import base64
+        from app.services.emergency import validate_and_prepare_voice_attachment
+        b64 = base64.b64encode(b"malicious-script-or-pdf").decode("ascii")
+        att, err = validate_and_prepare_voice_attachment(b64, mime_type="application/pdf")
+        assert att is None
+        assert "Unsupported audio MIME type" in (err or "")
+
+    def test_voice_attachment_validation_invalid_base64(self):
+        from app.services.emergency import validate_and_prepare_voice_attachment
+        att, err = validate_and_prepare_voice_attachment("%%%invalid-base64%%%", mime_type="audio/webm")
+        assert att is None
+        assert "Invalid base64" in (err or "")
+
+    def test_voice_attachment_validation_empty_audio(self):
+        import base64
+        from app.services.emergency import validate_and_prepare_voice_attachment
+        b64 = base64.b64encode(b"").decode("ascii")
+        att, err = validate_and_prepare_voice_attachment(b64, mime_type="audio/webm")
+        assert att is None
+        assert "empty" in (err or "")
+
+    def test_voice_attachment_validation_oversized_audio(self):
+        import base64
+        from app.services.emergency import validate_and_prepare_voice_attachment
+        big_audio = b"A" * 500
+        b64 = base64.b64encode(big_audio).decode("ascii")
+        att, err = validate_and_prepare_voice_attachment(b64, mime_type="audio/webm", max_bytes=200)
+        assert att is None
+        assert "exceeds maximum allowed size" in (err or "")
+
+    @pytest.mark.asyncio
+    async def test_resend_email_attachment_construction(self, monkeypatch):
+        import base64
+        monkeypatch.setenv("RESEND_API_KEY", "test-key")
+        from app.services.emergency import EmergencyService
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+
+        audio_bytes = b"dummy-audio"
+        b64 = base64.b64encode(audio_bytes).decode("ascii")
+
+        with patch("httpx.AsyncClient") as mc:
+            client = AsyncMock()
+            mc.return_value.__aenter__.return_value = client
+            client.post = AsyncMock(return_value=mock_resp)
+
+            svc = EmergencyService()
+            evt = make_event(
+                emergency_contact_email="guardian@example.com",
+                emergency_contact_phone="+919999999999",
+                voice_message_base64=b64,
+                voice_message_mime_type="audio/webm",
+            )
+            result = await svc.dispatch(evt)
+
+        assert result.email_sent is True
+        assert result.voice_attached is True
+        assert result.voice_error is None
+
+        # Verify Resend API call arguments
+        call_kwargs = client.post.call_args.kwargs
+        json_body = call_kwargs["json"]
+        assert "attachments" in json_body
+        assert len(json_body["attachments"]) == 1
+        att = json_body["attachments"][0]
+        assert att["filename"].endswith(".webm")
+        assert att["content"] == b64
+        assert att["content_type"] == "audio/webm"
+        assert "recorded voice message is attached" in json_body["text"]
+
+    @pytest.mark.asyncio
+    async def test_resend_email_voice_provider_failure(self, monkeypatch):
+        import base64
+        monkeypatch.setenv("RESEND_API_KEY", "test-key")
+        from app.services.emergency import EmergencyService
+        mock_resp = MagicMock()
+        mock_resp.status_code = 422
+        mock_resp.text = "Attachment validation failed"
+
+        b64 = base64.b64encode(b"audio").decode("ascii")
+
+        with patch("httpx.AsyncClient") as mc:
+            client = AsyncMock()
+            mc.return_value.__aenter__.return_value = client
+            client.post = AsyncMock(return_value=mock_resp)
+
+            svc = EmergencyService()
+            evt = make_event(
+                emergency_contact_email="guardian@example.com",
+                voice_message_base64=b64,
+                voice_message_mime_type="audio/webm",
+            )
+            result = await svc.dispatch(evt)
+
+        assert result.email_sent is False
+        assert result.voice_attached is False
+        assert "Resend HTTP 422" in (result.email_error or "")
+        assert result.voice_error is not None
+
+    @pytest.mark.asyncio
+    async def test_sos_preserves_flow_without_audio(self, monkeypatch):
+        monkeypatch.setenv("RESEND_API_KEY", "test-key")
+        from app.services.emergency import EmergencyService
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+
+        with patch("httpx.AsyncClient") as mc:
+            client = AsyncMock()
+            mc.return_value.__aenter__.return_value = client
+            client.post = AsyncMock(return_value=mock_resp)
+
+            svc = EmergencyService()
+            evt = make_event(emergency_contact_email="guardian@example.com")
+            result = await svc.dispatch(evt)
+
+        assert result.email_sent is True
+        assert result.voice_attached is False
+        assert result.voice_error is None
+        json_body = client.post.call_args.kwargs["json"]
+        assert "attachments" not in json_body
+        assert "No voice message was recorded." in json_body["text"]
+
+    def test_endpoint_trigger_with_valid_voice(self, monkeypatch):
+        import base64
+        monkeypatch.setenv("RESEND_API_KEY", "test-key")
+        from fastapi.testclient import TestClient
+        from app.main import app
+        client = TestClient(app)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+
+        b64 = base64.b64encode(b"valid-audio-data").decode("ascii")
+
+        with patch("httpx.AsyncClient") as mc:
+            mock_client = AsyncMock()
+            mc.return_value.__aenter__.return_value = mock_client
+            mock_client.post = AsyncMock(return_value=mock_resp)
+
+            resp = client.post("/api/v1/emergency/trigger", json={
+                "user_name": "Test User",
+                "emergency_contact_email": "test@example.com",
+                "voice_message_base64": b64,
+                "voice_message_mime_type": "audio/webm",
+            })
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["email_sent"] is True
+        assert data["voice_attached"] is True
+
+    def test_endpoint_trigger_with_invalid_mime_returns_400(self):
+        import base64
+        from fastapi.testclient import TestClient
+        from app.main import app
+        client = TestClient(app)
+
+        b64 = base64.b64encode(b"not-audio").decode("ascii")
+        resp = client.post("/api/v1/emergency/trigger", json={
+            "user_name": "Test User",
+            "emergency_contact_email": "test@example.com",
+            "voice_message_base64": b64,
+            "voice_message_mime_type": "application/pdf",
+        })
+        assert resp.status_code == 400
+        assert "Unsupported audio MIME type" in resp.json()["detail"]
+
+    def test_endpoint_trigger_with_corrupt_base64_returns_400(self):
+        from fastapi.testclient import TestClient
+        from app.main import app
+        client = TestClient(app)
+
+        resp = client.post("/api/v1/emergency/trigger", json={
+            "user_name": "Test User",
+            "emergency_contact_email": "test@example.com",
+            "voice_message_base64": "!!!corrupt!!!",
+            "voice_message_mime_type": "audio/webm",
+        })
+        assert resp.status_code == 400
+        assert "Invalid base64" in resp.json()["detail"]
+
+    def test_endpoint_trigger_without_voice_preserves_existing_flow(self):
+        from fastapi.testclient import TestClient
+        from app.main import app
+        client = TestClient(app)
+
+        resp = client.post("/api/v1/emergency/trigger", json={
+            "user_name": "Test User",
+            "emergency_contact_phone": "+919999999999",
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["voice_attached"] is False
+        assert data["sms_simulated"] is True
+
+
 class TestVisionService:
     def test_vision_module_parses(self):
         import ast, os

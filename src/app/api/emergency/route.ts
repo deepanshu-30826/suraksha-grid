@@ -8,6 +8,9 @@ export interface EmergencyPayload {
   route_name?: string;
   emergency_contact_email?: string;
   emergency_contact_phone?: string;
+  voice_message_base64?: string;
+  voice_message_mime_type?: string;
+  voice_message_filename?: string;
 }
 
 export async function POST(request: NextRequest) {
