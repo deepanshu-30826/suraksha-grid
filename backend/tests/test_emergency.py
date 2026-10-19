@@ -400,3 +400,302 @@ class TestVisionService:
         result, err = await analyse_image(b"fake", "application/pdf", api_key="test")
         assert result is None
         assert "Unsupported" in (err or "")
+
+
+class TestExotelVoiceService:
+    def test_normalize_phone_number(self):
+        from app.services.exotel import normalize_phone_number
+        assert normalize_phone_number("9876543210") == "+919876543210"
+        assert normalize_phone_number("+919876543210") == "+919876543210"
+        assert normalize_phone_number("09876543210") == "+919876543210"
+        assert normalize_phone_number(" 91 98765-43210 ") == "+919876543210"
+
+    @pytest.mark.asyncio
+    async def test_missing_credentials_returns_not_configured(self, monkeypatch):
+        monkeypatch.delenv("EXOTEL_API_KEY", raising=False)
+        monkeypatch.delenv("EXOTEL_API_TOKEN", raising=False)
+        monkeypatch.delenv("EXOTEL_CALLER_ID", raising=False)
+        monkeypatch.delenv("EXOTEL_APP_ID", raising=False)
+
+        from app.services.exotel import ExotelVoiceService
+        svc = ExotelVoiceService()
+        assert not svc.is_configured()
+
+        res = await svc.initiate_emergency_call(
+            to_phone="+919876543210",
+            email_sent=True,
+        )
+        assert res.initiated is False
+        assert res.status == "not_configured"
+        assert "not configured" in res.error.lower()
+
+    @pytest.mark.asyncio
+    async def test_missing_phone_returns_no_phone(self):
+        from app.services.exotel import ExotelVoiceService
+        svc = ExotelVoiceService()
+        res = await svc.initiate_emergency_call(to_phone="", email_sent=True)
+        assert res.initiated is False
+        assert res.status == "no_phone"
+
+    @pytest.mark.asyncio
+    async def test_successful_call_initiation_email_sent(self, monkeypatch):
+        monkeypatch.setenv("EXOTEL_ACCOUNT_SID", "surakshagrid1")
+        monkeypatch.setenv("EXOTEL_API_KEY", "test_key")
+        monkeypatch.setenv("EXOTEL_API_TOKEN", "test_token")
+        monkeypatch.setenv("EXOTEL_CALLER_ID", "08012345678")
+        monkeypatch.setenv("EXOTEL_APP_ID", "12345")
+
+        from app.services.exotel import ExotelVoiceService
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "Call": {
+                "Sid": "exotel_call_abc123",
+                "Status": "in-progress",
+            }
+        }
+
+        with patch("httpx.AsyncClient") as mc:
+            client = AsyncMock()
+            mc.return_value.__aenter__.return_value = client
+            client.post = AsyncMock(return_value=mock_resp)
+
+            svc = ExotelVoiceService()
+            res = await svc.initiate_emergency_call(
+                to_phone="+919876543210",
+                email_sent=True,
+            )
+
+        assert res.initiated is True
+        assert res.call_sid == "exotel_call_abc123"
+        assert res.status == "in-progress"
+        assert res.announcement_type == "location_email_sent"
+        assert res.error is None
+
+        call_kwargs = client.post.call_args.kwargs
+        assert call_kwargs["data"]["CustomField"] == "email_sent"
+        assert call_kwargs["data"]["From"] == "+919876543210"
+        assert call_kwargs["data"]["CallerId"] == "08012345678"
+
+    @pytest.mark.asyncio
+    async def test_call_initiation_email_failed_announcement(self, monkeypatch):
+        monkeypatch.setenv("EXOTEL_ACCOUNT_SID", "surakshagrid1")
+        monkeypatch.setenv("EXOTEL_API_KEY", "test_key")
+        monkeypatch.setenv("EXOTEL_API_TOKEN", "test_token")
+        monkeypatch.setenv("EXOTEL_CALLER_ID", "08012345678")
+        monkeypatch.setenv("EXOTEL_APP_ID", "12345")
+
+        from app.services.exotel import ExotelVoiceService
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "Call": {
+                "Sid": "exotel_call_generic999",
+                "Status": "queued",
+            }
+        }
+
+        with patch("httpx.AsyncClient") as mc:
+            client = AsyncMock()
+            mc.return_value.__aenter__.return_value = client
+            client.post = AsyncMock(return_value=mock_resp)
+
+            svc = ExotelVoiceService()
+            res = await svc.initiate_emergency_call(
+                to_phone="+919876543210",
+                email_sent=False,
+            )
+
+        assert res.initiated is True
+        assert res.announcement_type == "generic_alert"
+        assert client.post.call_args.kwargs["data"]["CustomField"] == "email_failed"
+
+    @pytest.mark.asyncio
+    async def test_exotel_403_permission_error(self, monkeypatch):
+        monkeypatch.setenv("EXOTEL_ACCOUNT_SID", "surakshagrid1")
+        monkeypatch.setenv("EXOTEL_API_KEY", "test_key")
+        monkeypatch.setenv("EXOTEL_API_TOKEN", "test_token")
+        monkeypatch.setenv("EXOTEL_CALLER_ID", "08012345678")
+        monkeypatch.setenv("EXOTEL_APP_ID", "12345")
+
+        from app.services.exotel import ExotelVoiceService
+        mock_resp = MagicMock()
+        mock_resp.status_code = 403
+        mock_resp.json.return_value = {
+            "RestException": {
+                "Status": 403,
+                "Message": "Outbound call not permitted. KYC verification pending.",
+            }
+        }
+
+        with patch("httpx.AsyncClient") as mc:
+            client = AsyncMock()
+            mc.return_value.__aenter__.return_value = client
+            client.post = AsyncMock(return_value=mock_resp)
+
+            svc = ExotelVoiceService()
+            res = await svc.initiate_emergency_call(
+                to_phone="+919876543210",
+                email_sent=True,
+            )
+
+        assert res.initiated is False
+        assert res.status == "account_permission_error"
+        assert "403" in res.error
+        assert "KYC verification pending" in res.error
+
+    @pytest.mark.asyncio
+    async def test_exotel_401_auth_error(self, monkeypatch):
+        monkeypatch.setenv("EXOTEL_ACCOUNT_SID", "surakshagrid1")
+        monkeypatch.setenv("EXOTEL_API_KEY", "wrong_key")
+        monkeypatch.setenv("EXOTEL_API_TOKEN", "wrong_token")
+        monkeypatch.setenv("EXOTEL_CALLER_ID", "08012345678")
+        monkeypatch.setenv("EXOTEL_APP_ID", "12345")
+
+        from app.services.exotel import ExotelVoiceService
+        mock_resp = MagicMock()
+        mock_resp.status_code = 401
+
+        with patch("httpx.AsyncClient") as mc:
+            client = AsyncMock()
+            mc.return_value.__aenter__.return_value = client
+            client.post = AsyncMock(return_value=mock_resp)
+
+            svc = ExotelVoiceService()
+            res = await svc.initiate_emergency_call(to_phone="+919876543210", email_sent=True)
+
+        assert res.initiated is False
+        assert res.status == "authentication_error"
+        assert "401" in res.error
+
+
+class TestEmergencyDispatchCoordination:
+    @pytest.mark.asyncio
+    async def test_duplicate_dispatch_is_suppressed(self, monkeypatch):
+        monkeypatch.setenv("RESEND_API_KEY", "test-key")
+        from app.services.emergency import EmergencyService
+
+        mock_email_resp = MagicMock()
+        mock_email_resp.status_code = 200
+
+        mock_exotel_svc = AsyncMock()
+        from app.services.exotel import ExotelCallResult
+        mock_exotel_svc.initiate_emergency_call = AsyncMock(
+            return_value=ExotelCallResult(
+                initiated=True,
+                call_sid="sid_initial",
+                status="queued",
+                announcement_type="location_email_sent",
+            )
+        )
+
+        with patch("httpx.AsyncClient") as mc:
+            client = AsyncMock()
+            mc.return_value.__aenter__.return_value = client
+            client.post = AsyncMock(return_value=mock_email_resp)
+
+            svc = EmergencyService(exotel_service=mock_exotel_svc)
+            evt = make_event(
+                emergency_contact_email="guardian@example.com",
+                emergency_contact_phone="+919876543210",
+                idempotency_key="sos_test_key_1",
+            )
+
+            res1 = await svc.dispatch(evt)
+            res2 = await svc.dispatch(evt)
+
+        # First dispatch triggers real actions
+        assert res1.email_sent is True
+        assert res1.call_initiated is True
+        assert res1.call_sid == "sid_initial"
+
+        # Second dispatch is deduplicated and returns cached result
+        assert res2.call_sid == "sid_initial"
+        assert mock_exotel_svc.initiate_emergency_call.call_count == 1
+        assert client.post.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_email_failure_still_attempts_exotel_call_with_generic_announcement(self, monkeypatch):
+        monkeypatch.delenv("RESEND_API_KEY", raising=False)
+        from app.services.emergency import EmergencyService
+        from app.services.exotel import ExotelCallResult
+
+        mock_exotel_svc = AsyncMock()
+        mock_exotel_svc.initiate_emergency_call = AsyncMock(
+            return_value=ExotelCallResult(
+                initiated=True,
+                call_sid="sid_generic_call",
+                status="in-progress",
+                announcement_type="generic_alert",
+            )
+        )
+
+        svc = EmergencyService(exotel_service=mock_exotel_svc)
+        evt = make_event(
+            emergency_contact_email="guardian@example.com",
+            emergency_contact_phone="+919876543210",
+        )
+        res = await svc.dispatch(evt)
+
+        # Email failed, but Exotel call succeeded with generic alert
+        assert res.email_sent is False
+        assert "RESEND_API_KEY not configured" in (res.email_error or "")
+        assert res.call_initiated is True
+        assert res.call_sid == "sid_generic_call"
+        assert res.call_announcement_type == "generic_alert"
+
+        call_kwargs = mock_exotel_svc.initiate_emergency_call.call_args.kwargs
+        assert call_kwargs["email_sent"] is False
+
+    @pytest.mark.asyncio
+    async def test_exotel_failure_does_not_block_email(self, monkeypatch):
+        monkeypatch.setenv("RESEND_API_KEY", "test-key")
+        from app.services.emergency import EmergencyService
+        from app.services.exotel import ExotelCallResult
+
+        mock_email_resp = MagicMock()
+        mock_email_resp.status_code = 200
+
+        mock_exotel_svc = AsyncMock()
+        mock_exotel_svc.initiate_emergency_call = AsyncMock(
+            return_value=ExotelCallResult(
+                initiated=False,
+                status="account_permission_error",
+                error="Account KYC pending",
+            )
+        )
+
+        with patch("httpx.AsyncClient") as mc:
+            client = AsyncMock()
+            mc.return_value.__aenter__.return_value = client
+            client.post = AsyncMock(return_value=mock_email_resp)
+
+            svc = EmergencyService(exotel_service=mock_exotel_svc)
+            evt = make_event(
+                emergency_contact_email="guardian@example.com",
+                emergency_contact_phone="+919876543210",
+            )
+            res = await svc.dispatch(evt)
+
+        assert res.email_sent is True
+        assert res.call_initiated is False
+        assert res.call_status == "account_permission_error"
+        assert "KYC pending" in (res.call_error or "")
+
+    def test_dynamic_exotel_announcement_endpoint(self):
+        from fastapi.testclient import TestClient
+        from app.main import app
+        from app.services.exotel import ANNOUNCEMENT_EMAIL_SENT, ANNOUNCEMENT_EMAIL_FAILED
+
+        client = TestClient(app)
+
+        resp1 = client.get("/api/v1/emergency/exotel-announcement?variant=email_sent")
+        assert resp1.status_code == 200
+        assert resp1.headers["content-type"].startswith("text/plain")
+        assert resp1.text == ANNOUNCEMENT_EMAIL_SENT
+        assert "check the location link" in resp1.text
+
+        resp2 = client.get("/api/v1/emergency/exotel-announcement?variant=email_failed")
+        assert resp2.status_code == 200
+        assert resp2.text == ANNOUNCEMENT_EMAIL_FAILED
+        assert "location could not be confirmed" in resp2.text

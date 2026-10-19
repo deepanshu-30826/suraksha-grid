@@ -25,6 +25,7 @@ import { LEVELS, MAP_LEGEND_LABELS } from "@/lib/constants";
 import { SafetyLens } from "@/components/safety/safety-lens";
 import { AnomalyBanner } from "@/components/safety/anomaly-banner";
 import { EmergencyAlert } from "@/components/emergency/emergency-alert";
+import { JourneyRecordingBanner } from "@/components/blackbox/journey-recording-banner";
 import { buttonVariants } from "@/components/ui/button";
 import { getSegments } from "@/lib/services/segments";
 import { getReports } from "@/lib/services/reports";
@@ -960,6 +961,8 @@ export default function MapPage() {
           onClose={() => setShowEmergency(false)}
         />
       )}
+
+      <JourneyRecordingBanner />
     </>
   );
 }

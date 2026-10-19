@@ -16,12 +16,15 @@ import {
   CheckCircle2,
   AlertCircle,
   Navigation,
+  Radio,
 } from "lucide-react";
 import { MapLayout } from "@/components/map/map-layout";
 import { MapLibreMap } from "@/components/map/maplibre-map";
 import { ScoreBadge } from "@/components/safety/score";
 import { AnomalyBanner } from "@/components/safety/anomaly-banner";
 import { EmergencyAlert } from "@/components/emergency/emergency-alert";
+import { JourneyRecordingBanner } from "@/components/blackbox/journey-recording-banner";
+import { useBlackBox } from "@/lib/services/use-blackbox";
 import { buttonVariants } from "@/components/ui/button";
 import { Card, Skeleton } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
@@ -90,6 +93,7 @@ function Nav() {
 
   // Real GPS position with continuous watch
   const { lngLat: userLngLat } = useGeolocation({ autoRequest: true, watch: true });
+  const { isActive: isBlackBoxActive, startJourney: startBlackBox } = useBlackBox();
 
   // Load authenticated user profile
   useEffect(() => {
@@ -714,6 +718,36 @@ function Nav() {
               </div>
             )}
 
+            {!isBlackBoxActive ? (
+              <button
+                type="button"
+                onClick={() => {
+                  void startBlackBox({
+                    destinationName: destNameParam || "Destination",
+                    startLocationName: "Trip Origin",
+                    initialCoords: userLngLat ? { latitude: userLngLat[1], longitude: userLngLat[0] } : undefined,
+                  });
+                }}
+                className="flex w-full items-center justify-center gap-2 rounded-xl border border-line bg-surface/70 py-2.5 text-xs font-semibold text-ink transition hover:bg-surface hover:border-brand active:scale-[0.98]"
+              >
+                <Radio className="h-4 w-4 text-brand" />
+                Record Journey (Safety Black Box)
+              </button>
+            ) : (
+              <div className="flex items-center justify-between rounded-xl border border-brand/40 bg-brand-soft/60 p-2.5 text-xs">
+                <span className="flex items-center gap-1.5 font-semibold text-brand-dark">
+                  <Radio className="h-3.5 w-3.5 animate-pulse text-brand" />
+                  Black Box Recording Active
+                </span>
+                <Link
+                  href="/safety/black-box"
+                  className="font-bold text-brand hover:underline"
+                >
+                  View
+                </Link>
+              </div>
+            )}
+
             <Link
               href="/routes"
               className={cn(
@@ -736,6 +770,8 @@ function Nav() {
           onClose={() => setShowEmergency(false)}
         />
       )}
+
+      <JourneyRecordingBanner />
     </>
   );
 }

@@ -24,6 +24,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
+from app.services.exotel import (
+    ExotelVoiceService,
+    get_exotel_service,
+    ANNOUNCEMENT_EMAIL_SENT,
+    ANNOUNCEMENT_EMAIL_FAILED,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -44,6 +51,7 @@ class EmergencyEvent:
     voice_message_base64: Optional[str] = None
     voice_message_mime_type: Optional[str] = None
     voice_message_filename: Optional[str] = None
+    idempotency_key: Optional[str] = None
 
 
 @dataclass
@@ -57,6 +65,11 @@ class AlertResult:
     location_available: bool = True
     voice_attached: bool = False
     voice_error: Optional[str] = None
+    call_initiated: bool = False
+    call_sid: Optional[str] = None
+    call_status: Optional[str] = None
+    call_error: Optional[str] = None
+    call_announcement_type: Optional[str] = None
 
 
 # ── Voice attachment validation ──────────────────────────────────────────────
@@ -250,14 +263,34 @@ async def _send_resend_email(
 # ── Main service ──────────────────────────────────────────────────────────────
 
 class EmergencyService:
-    def __init__(self) -> None:
+    def __init__(self, exotel_service: Optional[ExotelVoiceService] = None) -> None:
         self._sms = get_sms_provider()
+        self._exotel = exotel_service or get_exotel_service()
+        self._recent_dispatches: dict[str, tuple[float, AlertResult]] = {}
+        self._dedup_window_sec = 45.0
 
     @property
     def _resend_key(self) -> str:
         return os.environ.get("RESEND_API_KEY", "")
 
     async def dispatch(self, evt: EmergencyEvent) -> AlertResult:
+        # ── Duplicate SOS dispatch protection ─────────────────────────────────
+        dedup_key = (
+            evt.idempotency_key.strip()
+            if evt.idempotency_key and evt.idempotency_key.strip()
+            else f"{evt.emergency_contact_phone or ''}:{evt.emergency_contact_email or ''}"
+        )
+        now_ts = datetime.now(timezone.utc).timestamp()
+        if dedup_key and dedup_key in self._recent_dispatches:
+            cached_time, cached_result = self._recent_dispatches[dedup_key]
+            if now_ts - cached_time < self._dedup_window_sec:
+                logger.warning(
+                    "Duplicate SOS dispatch suppressed within %.1fs cooldown window (key=%s)",
+                    self._dedup_window_sec,
+                    dedup_key,
+                )
+                return cached_result
+
         has_location = evt.latitude is not None and evt.longitude is not None
         link = _map_link(evt.latitude, evt.longitude) if has_location else ""
 
@@ -275,15 +308,21 @@ class EmergencyService:
         has_voice = evt.voice_attachment is not None
 
         result = AlertResult(
-            email_sent=False, sms_sent=False,
+            email_sent=False,
+            sms_sent=False,
             sms_simulated=isinstance(self._sms, DemoSmsProvider),
             map_link=link,
             location_available=has_location,
             voice_attached=False,
             voice_error=voice_err,
+            call_initiated=False,
+            call_sid=None,
+            call_status=None,
+            call_error=None,
+            call_announcement_type=None,
         )
 
-        # ── Email ───────────────────────────────────────────────────────────
+        # ── Step 1: Attempt Emergency Location Email (Resend) ─────────────────
         to_email = evt.emergency_contact_email
         if to_email:
             if not self._resend_key:
@@ -305,8 +344,25 @@ class EmergencyService:
         else:
             result.email_error = "No emergency contact email configured"
 
-        # ── SMS ─────────────────────────────────────────────────────────────
+        # ── Step 2: Attempt Exotel Voice Call with Coordinated Announcement ───
+        # Announcement variant depends honestly on whether email was accepted
         to_phone = evt.emergency_contact_phone
+        if to_phone:
+            call_res = await self._exotel.initiate_emergency_call(
+                to_phone=to_phone,
+                email_sent=result.email_sent,
+                user_name=evt.user_name,
+            )
+            result.call_initiated = call_res.initiated
+            result.call_sid = call_res.call_sid
+            result.call_status = call_res.status
+            result.call_error = call_res.error
+            result.call_announcement_type = call_res.announcement_type
+        else:
+            result.call_status = "no_phone"
+            result.call_error = "No emergency contact phone configured"
+
+        # ── Step 3: SMS (Simulated demo mode) ─────────────────────────────────
         if to_phone:
             loc_desc = f"Last location: {link}" if link else "Location unavailable"
             voice_note = " (voice message sent via email)" if has_voice else ""
@@ -319,6 +375,10 @@ class EmergencyService:
             result.sms_error = err
         else:
             result.sms_error = "No emergency contact phone configured"
+
+        # Record in dedup cache
+        if dedup_key:
+            self._recent_dispatches[dedup_key] = (now_ts, result)
 
         return result
 

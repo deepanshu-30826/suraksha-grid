@@ -11,6 +11,7 @@ export interface EmergencyPayload {
   voice_message_base64?: string;
   voice_message_mime_type?: string;
   voice_message_filename?: string;
+  idempotency_key?: string;
 }
 
 export async function POST(request: NextRequest) {

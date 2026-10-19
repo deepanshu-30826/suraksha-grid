@@ -1,4 +1,4 @@
-import { Home, Map as MapIcon, Route, Navigation, ShieldCheck, MessageSquareText, PenSquare, LifeBuoy, User } from "lucide-react";
+import { Home, Map as MapIcon, Route, Navigation, ShieldCheck, MessageSquareText, PenSquare, LifeBuoy, User, Radio } from "lucide-react";
 import type { Level } from "@/types";
 export const BRAND = { name: "Suraksha Grid", tagline: "Navigate Smarter. Travel Safer." };
 export const LEVELS: Record<Level, { label: string; hex: string; bg: string; text: string }> = {
@@ -18,10 +18,11 @@ export const MAP_LEGEND_LABELS: Record<Level, string> = {
 export const NAV = [
   { href: "/", label: "Home", icon: Home }, { href: "/map", label: "Map", icon: MapIcon },
   { href: "/routes", label: "Routes", icon: Route }, { href: "/navigation", label: "Navigation", icon: Navigation },
-  { href: "/safety", label: "Safety Lens", icon: ShieldCheck }, { href: "/stories", label: "Street Stories", icon: MessageSquareText },
+  { href: "/safety", label: "Safety Lens", icon: ShieldCheck }, { href: "/safety/black-box", label: "Black Box", icon: Radio },
+  { href: "/stories", label: "Street Stories", icon: MessageSquareText },
   { href: "/report", label: "Add Report", icon: PenSquare }, { href: "/help", label: "Nearby Help", icon: LifeBuoy },
   { href: "/profile", label: "Profile", icon: User },
 ];
 export const BOTTOM_NAV = ["/", "/map", "/stories", "/profile"];
-export const BOTTOM_ALIAS: Record<string, string> = { "/routes": "/map", "/navigation": "/map", "/safety": "/map", "/help": "/map", "/report": "/stories" };
+export const BOTTOM_ALIAS: Record<string, string> = { "/routes": "/map", "/navigation": "/map", "/safety": "/map", "/safety/black-box": "/map", "/help": "/map", "/report": "/stories" };
 export const REPORT_TAGS = ["Poor lighting", "Isolated", "Crowded", "Construction", "Safety concern", "Police presence", "Other"];

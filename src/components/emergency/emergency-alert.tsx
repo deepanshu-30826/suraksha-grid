@@ -1,7 +1,6 @@
-
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -15,6 +14,13 @@ import {
   Volume2,
   RotateCcw,
   Trash2,
+  ShieldAlert,
+  ShieldCheck,
+  Mail,
+  ExternalLink,
+  PhoneCall,
+  Clock,
+  Radio,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -48,10 +54,17 @@ interface AlertResponse {
   location_available?: boolean;
   voice_attached?: boolean;
   voice_error?: string | null;
+  call_initiated?: boolean;
+  call_sid?: string | null;
+  call_status?: string | null;
+  call_error?: string | null;
+  call_announcement_type?: string | null;
 }
 
 const COUNTDOWN_SEC = 60;
-const MAX_AUDIO_BYTES = 5 * 1024 * 1024; // 5MB
+const MAX_AUDIO_BYTES = 5 * 1024 * 1024; // 5MB limit
+const STORAGE_KEY_EMAIL = "suraksha_emergency_contact_email";
+const STORAGE_KEY_PHONE = "suraksha_emergency_contact_phone";
 
 function formatRecordingTime(seconds: number): string {
   const mins = Math.floor(seconds / 60);
@@ -81,11 +94,15 @@ export function EmergencyAlert({
   routeName,
   onClose,
 }: Props) {
+  const emailInputId = useId();
+  const phoneInputId = useId();
+
   const [phase, setPhase] = useState<EmergencyState>("idle");
   const [remaining, setRemaining] = useState(COUNTDOWN_SEC);
   const [result, setResult] = useState<AlertResponse | null>(null);
   const [contactEmail, setContactEmail] = useState("");
   const [contactPhone, setContactPhone] = useState("");
+  const [idempotencyKey, setIdempotencyKey] = useState<string>("");
 
   // Voice recording state
   const [isRecording, setIsRecording] = useState(false);
@@ -103,8 +120,40 @@ export function EmergencyAlert({
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const sendingRef = useRef(false);
 
-  const { coords: geoCoords, isLoading: isGeoLoading } =
-    useGeolocation({ autoRequest: true });
+  const { coords: geoCoords, isLoading: isGeoLoading } = useGeolocation({
+    autoRequest: true,
+  });
+
+  // Restore saved contact details from localStorage on mount
+  useEffect(() => {
+    try {
+      const savedEmail = localStorage.getItem(STORAGE_KEY_EMAIL);
+      const savedPhone = localStorage.getItem(STORAGE_KEY_PHONE);
+      if (savedEmail) setContactEmail(savedEmail);
+      if (savedPhone) setContactPhone(savedPhone);
+    } catch {
+      // ignore localStorage security errors
+    }
+  }, []);
+
+  // Save contacts on change
+  const handleEmailChange = (val: string) => {
+    setContactEmail(val);
+    try {
+      localStorage.setItem(STORAGE_KEY_EMAIL, val.trim());
+    } catch {
+      // ignore
+    }
+  };
+
+  const handlePhoneChange = (val: string) => {
+    setContactPhone(val);
+    try {
+      localStorage.setItem(STORAGE_KEY_PHONE, val.trim());
+    } catch {
+      // ignore
+    }
+  };
 
   const clearCountdown = useCallback(() => {
     if (intervalRef.current) {
@@ -269,7 +318,7 @@ export function EmergencyAlert({
           err.name === "PermissionDeniedError"
         ) {
           setRecordingError(
-            "Microphone permission denied. Enable microphone access in browser settings or proceed without voice message."
+            "Microphone permission denied. Grant permission in your browser or proceed without audio."
           );
         } else if (
           err.name === "NotFoundError" ||
@@ -299,7 +348,7 @@ export function EmergencyAlert({
   }, [clearRecordingTimer, stopMediaTracks]);
 
   const sendAlert = useCallback(async () => {
-    // Prevent duplicate requests from countdown and Send Now.
+    // Prevent duplicate requests from countdown and Send Now button
     if (sendingRef.current) return;
 
     sendingRef.current = true;
@@ -330,6 +379,12 @@ export function EmergencyAlert({
         }
       }
 
+      const activeIdempotencyKey =
+        idempotencyKey || `sos_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+      if (!idempotencyKey) {
+        setIdempotencyKey(activeIdempotencyKey);
+      }
+
       const body = {
         user_name: userName,
         latitude: geoCoords?.latitude,
@@ -341,6 +396,7 @@ export function EmergencyAlert({
         voice_message_base64: voiceB64,
         voice_message_mime_type: voiceMime,
         voice_message_filename: voiceFilename,
+        idempotency_key: activeIdempotencyKey,
       };
 
       const response = await fetch("/api/emergency", {
@@ -350,7 +406,6 @@ export function EmergencyAlert({
       });
 
       let data: AlertResponse;
-
       try {
         data = (await response.json()) as AlertResponse;
       } catch {
@@ -361,9 +416,10 @@ export function EmergencyAlert({
 
       setResult(data);
 
-      // HTTP 200 alone does NOT mean an email was sent.
-      // Require the backend's explicit email_sent confirmation.
-      if (response.ok && data.email_sent === true) {
+      // Distinguish honest outcomes:
+      // If at least one primary channel (Email or Exotel Call) succeeded, show sent phase.
+      // If both channels failed or returned errors, transition to error phase.
+      if (response.ok && (data.email_sent === true || data.call_initiated === true)) {
         setPhase("sent");
       } else {
         setPhase("error");
@@ -388,6 +444,7 @@ export function EmergencyAlert({
     contactEmail,
     contactPhone,
     audioBlob,
+    idempotencyKey,
   ]);
 
   useEffect(() => {
@@ -421,6 +478,7 @@ export function EmergencyAlert({
     }
     setResult(null);
     setRemaining(COUNTDOWN_SEC);
+    setIdempotencyKey(`sos_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`);
     setPhase("countdown");
   }
 
@@ -449,102 +507,209 @@ export function EmergencyAlert({
     void sendAlert();
   }
 
-  const circumference = 2 * Math.PI * 38;
-  const dash = circumference * (remaining / COUNTDOWN_SEC);
+  function resetToIdle() {
+    clearCountdown();
+    stopRecording();
+    setPhase("idle");
+    setRemaining(COUNTDOWN_SEC);
+    setResult(null);
+  }
+
+  const circumference = 2 * Math.PI * 42;
+  const strokeDashoffset = circumference - (remaining / COUNTDOWN_SEC) * circumference;
 
   const errorMessage =
-    result?.email_error ||
     result?.error ||
-    (result?.email_sent === false
-      ? "Email was not sent. Check the recipient and email configuration."
-      : "The email could not be confirmed. Please check the service logs.");
+    result?.email_error ||
+    result?.call_error ||
+    "The emergency alert could not be dispatched. Please verify contact information and backend settings.";
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-4 sm:items-center">
-      <Card
-        className={cn(
-          "w-full max-w-sm animate-rise space-y-4 border-2",
-          phase === "countdown"
-            ? "border-elevated"
-            : phase === "sent"
-              ? "border-safer"
-              : "border-concern"
-        )}
-      >
-        <div className="flex items-center justify-between">
-          <span
-            className={cn(
-              "flex items-center gap-2 font-bold",
-              phase === "sent" ? "text-safer" : "text-concern"
-            )}
-          >
-            {phase === "sent" ? (
-              <CheckCircle2 className="h-5 w-5" />
-            ) : (
-              <AlertTriangle className="h-5 w-5" />
-            )}
-
-            {phase === "idle" && "Emergency Alert"}
-            {phase === "countdown" && "Alert Countdown"}
-            {phase === "sending" && "Sending Alert…"}
-            {phase === "sent" && "Email Accepted"}
-            {phase === "cancelled" && "Alert Cancelled"}
-            {phase === "error" && "Email Not Confirmed"}
-          </span>
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="emergency-modal-title"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-ink/65 backdrop-blur-sm p-3.5 sm:p-6 overflow-y-auto animate-rise"
+    >
+      <Card className="w-full max-w-lg overflow-hidden rounded-2xl border border-line bg-white shadow-sheet my-auto">
+        {/* Header Bar */}
+        <div className="flex items-center justify-between border-b border-line/80 px-5 py-4 sm:px-6">
+          <div className="flex items-center gap-2.5">
+            <div
+              className={cn(
+                "flex h-9 w-9 items-center justify-center rounded-xl",
+                phase === "countdown"
+                  ? "bg-amber-100 text-amber-700"
+                  : phase === "sent"
+                    ? "bg-safer/15 text-safer"
+                    : phase === "cancelled"
+                      ? "bg-surface text-muted"
+                      : "bg-red-100 text-concern"
+              )}
+            >
+              {phase === "sent" ? (
+                <ShieldCheck className="h-5 w-5" />
+              ) : phase === "cancelled" ? (
+                <CheckCircle2 className="h-5 w-5" />
+              ) : (
+                <ShieldAlert className="h-5 w-5" />
+              )}
+            </div>
+            <div>
+              <span className="block text-[11px] font-bold uppercase tracking-wider text-muted">
+                Suraksha Grid Emergency
+              </span>
+              <h2
+                id="emergency-modal-title"
+                className="text-base sm:text-lg font-bold text-ink"
+              >
+                {phase === "idle" && "Emergency Safety Alert"}
+                {phase === "countdown" && "SOS Countdown Active"}
+                {phase === "sending" && "Dispatching Emergency Alert…"}
+                {phase === "sent" && "Alert Dispatched"}
+                {phase === "cancelled" && "Alert Cancelled"}
+                {phase === "error" && "Dispatch Incomplete"}
+              </h2>
+            </div>
+          </div>
 
           {phase !== "countdown" && phase !== "sending" && (
             <button
               type="button"
               onClick={handleClose}
-              aria-label="Close"
-              className="rounded-full p-1 text-muted hover:bg-surface"
+              aria-label="Close emergency modal"
+              className="rounded-xl p-2 text-muted hover:bg-surface hover:text-ink transition-colors focus-visible:outline-brand"
             >
-              <X className="h-4 w-4" />
+              <X className="h-5 w-5" />
             </button>
           )}
         </div>
 
-        {phase === "idle" && (
-          <>
-            <p className="text-sm text-muted">
-              Starting the alert begins a {COUNTDOWN_SEC}-second countdown.
-              Cancel if you are safe.
-            </p>
+        {/* Modal Body */}
+        <div className="p-5 sm:p-6 space-y-4 max-h-[75vh] overflow-y-auto">
+          {/* Phase 1: IDLE / CONFIGURATION */}
+          {phase === "idle" && (
+            <>
+              <p className="text-xs sm:text-sm text-muted leading-relaxed">
+                Starting this alert begins an automatic <b>60-second countdown</b>.
+                Your trusted contact will receive an emergency email with your live
+                map location and an automated outbound voice call. You can cancel anytime
+                if you are safe.
+              </p>
 
-            <div className="space-y-2">
-              <label className="block text-xs font-semibold">
-                Test or emergency contact email
-              </label>
-              <input
-                type="email"
-                value={contactEmail}
-                onChange={(event) => setContactEmail(event.target.value)}
-                placeholder="your-email@example.com"
-                autoComplete="email"
-                className="h-10 w-full rounded-xl border border-line px-3 text-sm outline-none focus:border-brand"
-              />
+              {/* Step 1: Trusted Contacts */}
+              <div className="rounded-xl border border-line bg-surface/60 p-3.5 sm:p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold uppercase tracking-wider text-ink flex items-center gap-1.5">
+                    <Mail className="h-3.5 w-3.5 text-brand" />
+                    Trusted Emergency Contacts
+                  </span>
+                  <span className="text-[11px] text-muted">Configurable</span>
+                </div>
 
-              <label className="block text-xs font-semibold">
-                Emergency contact phone (optional)
-              </label>
-              <input
-                type="tel"
-                value={contactPhone}
-                onChange={(event) => setContactPhone(event.target.value)}
-                placeholder="+91 XXXXX XXXXX"
-                autoComplete="tel"
-                className="h-10 w-full rounded-xl border border-line px-3 text-sm outline-none focus:border-brand"
-              />
-
-              {/* Voice Message Section */}
-              <div className="pt-1">
-                <div className="mb-1.5 flex items-center justify-between">
-                  <label className="block text-xs font-semibold">
-                    Voice message (optional)
+                <div className="space-y-1">
+                  <label
+                    htmlFor={emailInputId}
+                    className="block text-xs font-semibold text-ink"
+                  >
+                    Emergency Contact Email
                   </label>
+                  <p className="text-[11px] text-muted">
+                    Receives live Google Maps location coordinates link and voice note.
+                  </p>
+                  <div className="relative">
+                    <Mail className="absolute left-3 top-3 h-4 w-4 text-muted pointer-events-none" />
+                    <input
+                      id={emailInputId}
+                      type="email"
+                      value={contactEmail}
+                      onChange={(e) => handleEmailChange(e.target.value)}
+                      placeholder="guardian@example.com"
+                      autoComplete="email"
+                      className="h-10 w-full rounded-xl border border-line bg-white pl-9 pr-3 text-sm text-ink placeholder:text-muted/60 outline-none focus:border-brand focus:ring-1 focus:ring-brand"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1 pt-1">
+                  <label
+                    htmlFor={phoneInputId}
+                    className="block text-xs font-semibold text-ink"
+                  >
+                    Emergency Contact Phone (for Exotel Voice Call)
+                  </label>
+                  <p className="text-[11px] text-muted">
+                    Receives an automated outbound SOS voice call announcement.
+                  </p>
+                  <div className="relative">
+                    <Phone className="absolute left-3 top-3 h-4 w-4 text-muted pointer-events-none" />
+                    <input
+                      id={phoneInputId}
+                      type="tel"
+                      value={contactPhone}
+                      onChange={(e) => handlePhoneChange(e.target.value)}
+                      placeholder="+91 98765 43210"
+                      autoComplete="tel"
+                      className="h-10 w-full rounded-xl border border-line bg-white pl-9 pr-3 text-sm text-ink placeholder:text-muted/60 outline-none focus:border-brand focus:ring-1 focus:ring-brand"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Step 2: Live Location Status Card */}
+              <div className="rounded-xl border border-line bg-surface/40 p-3 flex items-center justify-between text-xs">
+                <div className="flex items-center gap-2">
+                  <div
+                    className={cn(
+                      "flex h-7 w-7 items-center justify-center rounded-lg",
+                      geoCoords
+                        ? "bg-safer/15 text-safer"
+                        : isGeoLoading
+                          ? "bg-brand/10 text-brand"
+                          : "bg-amber-100 text-amber-700"
+                    )}
+                  >
+                    <MapPin className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <span className="font-semibold text-ink block">
+                      {geoCoords
+                        ? "GPS Location Captured"
+                        : isGeoLoading
+                          ? "Acquiring Device GPS…"
+                          : "GPS Coordinates Unavailable"}
+                    </span>
+                    <span className="text-[11px] text-muted">
+                      {geoCoords ? (
+                        `${geoCoords.latitude.toFixed(5)}, ${geoCoords.longitude.toFixed(5)}`
+                      ) : isGeoLoading ? (
+                        "Requesting browser permission…"
+                      ) : (
+                        "Alert will state 'Location unavailable' honestly"
+                      )}
+                    </span>
+                  </div>
+                </div>
+                {geoCoords && (
+                  <span className="rounded-full bg-safer/15 px-2 py-0.5 text-[10px] font-bold text-safer">
+                    Ready
+                  </span>
+                )}
+                {isGeoLoading && (
+                  <Loader2 className="h-4 w-4 animate-spin text-brand" />
+                )}
+              </div>
+
+              {/* Step 3: Voice Message Section */}
+              <div className="rounded-xl border border-line bg-surface/60 p-3.5 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold uppercase tracking-wider text-ink flex items-center gap-1.5">
+                    <Mic className="h-3.5 w-3.5 text-brand" />
+                    Recorded Voice Note (Optional)
+                  </span>
                   {audioBlob && (
-                    <span className="text-[11px] font-medium text-brand">
-                      {(audioBlob.size / 1024).toFixed(0)} KB recorded
+                    <span className="text-[11px] font-semibold text-brand">
+                      {(audioBlob.size / 1024).toFixed(0)} KB attached
                     </span>
                   )}
                 </div>
@@ -553,29 +718,29 @@ export function EmergencyAlert({
                   <Button
                     type="button"
                     variant="outline"
-                    className="w-full justify-center gap-2 border-dashed border-line text-xs hover:border-brand hover:bg-surface"
+                    className="w-full justify-center gap-2 border-line bg-white text-xs font-semibold text-ink hover:border-brand hover:bg-surface"
                     onClick={() => void startRecording()}
                   >
-                    <Mic className="h-4 w-4 text-concern" />
-                    Record voice message
+                    <Mic className="h-3.5 w-3.5 text-concern" />
+                    Record audio message (max 60s)
                   </Button>
                 )}
 
                 {isRecording && (
-                  <div className="flex items-center justify-between rounded-xl border border-concern/30 bg-concern/5 p-2.5">
+                  <div className="flex items-center justify-between rounded-xl border border-red-300 bg-red-50/80 p-2.5">
                     <div className="flex items-center gap-2">
                       <span className="relative flex h-3 w-3">
                         <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-concern opacity-75" />
                         <span className="relative inline-flex h-3 w-3 rounded-full bg-concern" />
                       </span>
                       <span className="text-xs font-semibold text-concern">
-                        Recording… {formatRecordingTime(recordingSeconds)} / 01:00
+                        Recording message… {formatRecordingTime(recordingSeconds)} / 01:00
                       </span>
                     </div>
                     <Button
                       type="button"
                       size="sm"
-                      className="h-7 bg-concern px-2.5 text-xs hover:bg-concern/90"
+                      className="h-7 bg-concern px-3 text-xs font-semibold text-white hover:bg-concern/90"
                       onClick={stopRecording}
                     >
                       <Square className="mr-1 h-3 w-3 fill-current" />
@@ -585,18 +750,18 @@ export function EmergencyAlert({
                 )}
 
                 {audioBlob && audioUrl && (
-                  <div className="space-y-2 rounded-xl border border-line bg-surface p-2.5">
+                  <div className="space-y-2 rounded-xl border border-line bg-white p-2.5">
                     <div className="flex items-center justify-between">
                       <span className="flex items-center gap-1.5 text-xs font-medium text-ink">
                         <Volume2 className="h-3.5 w-3.5 text-brand" />
-                        Voice preview
+                        Voice Preview
                       </span>
                       <div className="flex items-center gap-1">
                         <button
                           type="button"
                           onClick={() => void startRecording()}
-                          title="Re-record"
-                          className="flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] text-muted hover:bg-elevated hover:text-ink"
+                          title="Re-record voice note"
+                          className="flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] text-muted hover:bg-surface hover:text-ink transition-colors"
                         >
                           <RotateCcw className="h-3 w-3" />
                           Re-record
@@ -604,8 +769,8 @@ export function EmergencyAlert({
                         <button
                           type="button"
                           onClick={discardRecording}
-                          title="Remove recording"
-                          className="flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] text-concern hover:bg-concern/10"
+                          title="Remove voice note"
+                          className="flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] text-concern hover:bg-red-50 transition-colors"
                         >
                           <Trash2 className="h-3 w-3" />
                           Remove
@@ -622,242 +787,402 @@ export function EmergencyAlert({
                 )}
 
                 {recordingError && (
-                  <p className="mt-1 flex items-start gap-1 text-[11px] text-concern">
+                  <p className="flex items-start gap-1 text-[11px] text-concern">
                     <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
                     <span>{recordingError}</span>
                   </p>
                 )}
               </div>
-            </div>
 
-            <p className="flex items-start gap-1.5 rounded-xl bg-surface p-2 text-[11px] text-muted">
-              <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-              Demo mode: SMS is simulated, not sent. Resend test sender may
-              only allow the account's authorized test recipient.
-            </p>
+              {/* Demo Mode / Policy Note */}
+              <div className="flex items-start gap-2 rounded-xl bg-surface p-2.5 text-[11px] text-muted border border-line/60">
+                <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-brand" />
+                <span>
+                  Resend handles emergency location emails; Exotel delivers the automated
+                  SOS voice call. SMS is simulated in demo mode.
+                </span>
+              </div>
 
-            <div className="flex gap-2">
-              <Button
-                variant="outline"
-                className="flex-1"
-                onClick={handleClose}
-              >
-                Close
-              </Button>
-              <Button
-                className="flex-1 bg-concern hover:bg-concern/90"
-                onClick={startCountdown}
-              >
-                <Phone className="h-4 w-4" />
-                Start alert
-              </Button>
-            </div>
-          </>
-        )}
-
-        {phase === "countdown" && (
-          <>
-            <div className="flex flex-col items-center gap-3 py-2">
-              <svg
-                width="100"
-                height="100"
-                viewBox="0 0 100 100"
-                className="-rotate-90"
-                aria-label={`${remaining} seconds remaining`}
-              >
-                <circle
-                  cx="50"
-                  cy="50"
-                  r="38"
-                  fill="none"
-                  stroke="#E3E8EF"
-                  strokeWidth="6"
-                />
-                <circle
-                  cx="50"
-                  cy="50"
-                  r="38"
-                  fill="none"
-                  stroke="#EA580C"
-                  strokeWidth="6"
-                  strokeLinecap="round"
-                  strokeDasharray={`${dash} ${circumference}`}
-                  style={{ transition: "stroke-dasharray 1s linear" }}
-                />
-                <text
-                  x="50"
-                  y="55"
-                  textAnchor="middle"
-                  className="fill-ink text-2xl font-bold"
-                  style={{ fontSize: 28, fontWeight: 700 }}
-                  transform="rotate(90, 50, 50)"
+              {/* Action Buttons */}
+              <div className="pt-2 flex flex-col sm:flex-row gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="sm:w-1/3 order-2 sm:order-1 rounded-xl text-ink"
+                  onClick={handleClose}
                 >
-                  {remaining}
-                </text>
-              </svg>
+                  Close
+                </Button>
+                <Button
+                  type="button"
+                  className="sm:w-2/3 order-1 sm:order-2 rounded-xl bg-concern text-white font-bold hover:bg-concern/90 shadow-sm"
+                  onClick={startCountdown}
+                >
+                  <Phone className="mr-2 h-4 w-4" />
+                  Start 60s Emergency Alert
+                </Button>
+              </div>
 
-              <p className="text-center text-sm text-muted">
-                Alert sends in <b>{remaining}s</b> unless cancelled.
-              </p>
+              <div className="text-center">
+                <button
+                  type="button"
+                  onClick={sendNow}
+                  className="text-xs font-semibold text-concern hover:underline underline-offset-4"
+                >
+                  In immediate danger? Send alert right now without waiting
+                </button>
+              </div>
+            </>
+          )}
 
-              <div className="flex flex-col items-center gap-1.5 text-xs text-muted">
-                <div className="flex items-center gap-1.5">
-                  <MapPin className="h-3.5 w-3.5 text-brand" />
-                  {geoCoords ? (
-                    <span>
-                      Location captured ({geoCoords.latitude.toFixed(4)},{" "}
-                      {geoCoords.longitude.toFixed(4)})
-                    </span>
-                  ) : isGeoLoading ? (
-                    <span className="flex items-center gap-1">
-                      <Loader2 className="h-3 w-3 animate-spin text-brand" />
-                      Acquiring GPS location…
-                    </span>
-                  ) : (
-                    <span className="font-medium text-amber-600">
-                      GPS location unavailable
-                    </span>
+          {/* Phase 2: 60-SECOND COUNTDOWN */}
+          {phase === "countdown" && (
+            <div className="flex flex-col items-center gap-4 py-2">
+              {/* Radial Countdown Indicator */}
+              <div className="relative flex items-center justify-center">
+                <svg
+                  width="110"
+                  height="110"
+                  viewBox="0 0 100 100"
+                  className="-rotate-90"
+                  aria-label={`${remaining} seconds remaining`}
+                >
+                  <circle
+                    cx="50"
+                    cy="50"
+                    r="42"
+                    fill="none"
+                    stroke="#E3E8EF"
+                    strokeWidth="7"
+                  />
+                  <circle
+                    cx="50"
+                    cy="50"
+                    r="42"
+                    fill="none"
+                    stroke="#EA580C"
+                    strokeWidth="7"
+                    strokeLinecap="round"
+                    strokeDasharray={circumference}
+                    strokeDashoffset={strokeDashoffset}
+                    style={{ transition: "stroke-dashoffset 1s linear" }}
+                  />
+                </svg>
+                <div className="absolute flex flex-col items-center">
+                  <span className="text-3xl font-extrabold text-ink">{remaining}</span>
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-muted">
+                    sec
+                  </span>
+                </div>
+              </div>
+
+              <div className="text-center space-y-1">
+                <h3 className="text-sm sm:text-base font-bold text-ink">
+                  Emergency alert will dispatch automatically
+                </h3>
+                <p className="text-xs text-muted max-w-sm">
+                  If you are safe, cancel below before the countdown finishes.
+                </p>
+              </div>
+
+              {/* Queued payload recap */}
+              <div className="w-full rounded-xl border border-line bg-surface/60 p-3 space-y-1.5 text-xs">
+                <div className="flex justify-between text-muted">
+                  <span>Recipient Email:</span>
+                  <span className="font-semibold text-ink">
+                    {contactEmail.trim() || "(None configured)"}
+                  </span>
+                </div>
+                <div className="flex justify-between text-muted">
+                  <span>Recipient Phone:</span>
+                  <span className="font-semibold text-ink">
+                    {contactPhone.trim() || "(None configured)"}
+                  </span>
+                </div>
+                <div className="flex justify-between text-muted">
+                  <span>GPS Location:</span>
+                  <span className="font-semibold text-ink">
+                    {geoCoords
+                      ? `${geoCoords.latitude.toFixed(4)}, ${geoCoords.longitude.toFixed(4)}`
+                      : "Unavailable"}
+                  </span>
+                </div>
+                <div className="flex justify-between text-muted">
+                  <span>Voice Note:</span>
+                  <span className="font-semibold text-ink">
+                    {audioBlob ? `${(audioBlob.size / 1024).toFixed(0)} KB attached` : "None"}
+                  </span>
+                </div>
+              </div>
+
+              {/* Cancellation & Immediate Actions */}
+              <div className="w-full space-y-2 pt-1">
+                <Button
+                  type="button"
+                  className="w-full rounded-xl bg-safer hover:bg-safer/90 text-white font-bold py-3 text-sm shadow-md"
+                  onClick={cancel}
+                >
+                  <CheckCircle2 className="mr-2 h-4 w-4" />
+                  I'm Safe — Cancel Alert
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full rounded-xl border-line text-xs font-semibold text-concern hover:bg-red-50 hover:border-red-200"
+                  onClick={sendNow}
+                >
+                  Send Now Immediately
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {/* Phase 3: DISPATCHING / SENDING */}
+          {phase === "sending" && (
+            <div className="flex flex-col items-center justify-center py-8 space-y-4 text-center">
+              <Loader2 className="h-10 w-10 animate-spin text-concern" />
+              <div className="space-y-1">
+                <h3 className="text-base font-bold text-ink">Dispatching SOS Alert</h3>
+                <p className="text-xs text-muted max-w-xs">
+                  Connecting to emergency providers, transmitting location, and initiating
+                  outbound voice call…
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Phase 4: SENT (Breakdown of Channels) */}
+          {phase === "sent" && result && (
+            <div className="space-y-3.5">
+              <div className="rounded-xl border border-safer/30 bg-safer/10 p-3 text-xs text-safer font-medium flex items-start gap-2">
+                <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-safer" />
+                <span>
+                  Emergency alert request accepted. Detailed provider dispatch statuses are
+                  listed below.
+                </span>
+              </div>
+
+              {/* Status Breakdown List */}
+              <div className="space-y-2 text-xs">
+                {/* 1. Location Status */}
+                <div className="rounded-xl border border-line p-3 flex items-start justify-between bg-surface/40">
+                  <div className="flex items-start gap-2">
+                    <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-brand" />
+                    <div>
+                      <span className="font-bold text-ink block">Location Status</span>
+                      <span className="text-[11px] text-muted">
+                        {result.location_available
+                          ? "Accurate GPS coordinates included in alert."
+                          : "GPS coordinates were unavailable at the time of alert."}
+                      </span>
+                    </div>
+                  </div>
+                  {result.map_link && (
+                    <a
+                      href={result.map_link}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-1 font-semibold text-brand hover:underline"
+                    >
+                      <span>Map</span>
+                      <ExternalLink className="h-3 w-3" />
+                    </a>
                   )}
                 </div>
 
-                {audioBlob && (
-                  <div className="flex items-center gap-1.5 font-medium text-brand">
-                    <Volume2 className="h-3.5 w-3.5" />
-                    <span>
-                      Voice message attached ({(audioBlob.size / 1024).toFixed(0)} KB)
+                {/* 2. Email Delivery */}
+                <div className="rounded-xl border border-line p-3 flex items-start gap-2 bg-surface/40">
+                  {result.email_sent ? (
+                    <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-safer" />
+                  ) : (
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+                  )}
+                  <div>
+                    <span className="font-bold text-ink block">
+                      Emergency Email (Resend)
+                    </span>
+                    <span className="text-[11px] text-muted block">
+                      {result.email_sent
+                        ? "Accepted by email provider. (Note: Provider acceptance is confirmed; inbox receipt depends on recipient email server filters)."
+                        : `Email failed: ${result.email_error || "Could not deliver email"}`}
                     </span>
                   </div>
+                </div>
+
+                {/* 3. Exotel Voice Call */}
+                <div className="rounded-xl border border-line p-3 flex items-start gap-2 bg-surface/40">
+                  {result.call_initiated ? (
+                    <PhoneCall className="mt-0.5 h-4 w-4 shrink-0 text-safer" />
+                  ) : (
+                    <Info className="mt-0.5 h-4 w-4 shrink-0 text-muted" />
+                  )}
+                  <div>
+                    <span className="font-bold text-ink block">
+                      Outbound Voice Call (Exotel)
+                    </span>
+                    <span className="text-[11px] text-muted block">
+                      {result.call_initiated ? (
+                        <>
+                          Automated call initiated (Status: {result.call_status || "queued"}
+                          {result.call_sid ? `, Sid: ${result.call_sid.substring(0, 14)}…` : ""}).
+                          Announcement:{" "}
+                          {result.call_announcement_type === "location_email_sent"
+                            ? "Confirmed location email announcement"
+                            : "Generic emergency alert"}
+                        </>
+                      ) : (
+                        result.call_error || "Voice calling not configured on server"
+                      )}
+                    </span>
+                  </div>
+                </div>
+
+                {/* 4. Voice Recording */}
+                {result.voice_attached && (
+                  <div className="rounded-xl border border-line p-3 flex items-start gap-2 bg-surface/40">
+                    <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-safer" />
+                    <div>
+                      <span className="font-bold text-ink block">
+                        Voice Message Note
+                      </span>
+                      <span className="text-[11px] text-muted">
+                        Playable voice audio was attached and delivered with the emergency
+                        email.
+                      </span>
+                    </div>
+                  </div>
                 )}
-              </div>
-            </div>
 
-            <div className="flex gap-2">
-              <Button
-                className="flex-1 bg-safer hover:bg-safer/90"
-                onClick={cancel}
-              >
-                <CheckCircle2 className="h-4 w-4" />
-                I'm safe — Cancel
-              </Button>
-              <Button
-                className="flex-1 bg-concern hover:bg-concern/90"
-                onClick={sendNow}
-              >
-                Send now
-              </Button>
-            </div>
-          </>
-        )}
-
-        {phase === "sending" && (
-          <div className="flex flex-col items-center gap-3 py-4">
-            <Loader2 className="h-10 w-10 animate-spin text-concern" />
-            <p className="text-sm text-muted">
-              Sending email alert and checking provider response…
-            </p>
-          </div>
-        )}
-
-        {phase === "sent" && result && (
-          <>
-            <div className="space-y-3 text-sm">
-              <div className="flex items-start gap-2 text-safer">
-                <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
-                <span>
-                  Resend accepted the email request. This does not guarantee
-                  delivery to the inbox.
-                </span>
+                {/* 5. SMS Simulator notice */}
+                <div className="rounded-xl border border-line p-2.5 flex items-start gap-2 bg-surface/30 text-[11px] text-muted">
+                  <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted" />
+                  <span>Demo mode notice: SMS is simulated; no carrier SMS was sent.</span>
+                </div>
               </div>
 
-              {result.voice_attached && (
-                <div className="flex items-start gap-2 text-safer">
-                  <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
-                  <span>
-                    Playable voice message attached and delivered with emergency email.
+              {/* Direct Emergency Contact Reminder */}
+              <div className="rounded-xl border border-red-200 bg-red-50/70 p-3 text-xs flex items-center justify-between">
+                <div>
+                  <span className="font-bold text-concern block">Need Immediate Police?</span>
+                  <span className="text-[11px] text-muted">
+                    Dial 112 directly for emergency services.
                   </span>
                 </div>
-              )}
-
-              {result.voice_error && (
-                <div className="flex items-start gap-2 text-concern text-xs">
-                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                  <span>{result.voice_error}</span>
-                </div>
-              )}
-
-              <div className="flex items-start gap-2 text-muted">
-                <Info className="mt-0.5 h-4 w-4 shrink-0" />
-                <span>
-                  SMS is simulated in demo mode. No real SMS was sent.
-                </span>
+                <a
+                  href="tel:112"
+                  className="rounded-lg bg-concern px-3 py-1.5 text-xs font-bold text-white hover:bg-concern/90"
+                >
+                  Call 112
+                </a>
               </div>
 
-              {result.map_link && (
-                <a
-                  href={result.map_link}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-1.5 text-brand hover:underline"
+              <div className="pt-2 flex gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-1/2 rounded-xl text-ink"
+                  onClick={resetToIdle}
                 >
-                  <MapPin className="h-4 w-4" />
-                  View location on map
-                </a>
-              )}
-
-              {!result.map_link && (
-                <p className="text-xs text-muted">
-                  Location was unavailable at the time of the alert.
-                </p>
-              )}
+                  Send Another
+                </Button>
+                <Button
+                  type="button"
+                  className="w-1/2 rounded-xl bg-ink text-white font-semibold"
+                  onClick={handleClose}
+                >
+                  Close
+                </Button>
+              </div>
             </div>
+          )}
 
-            <Button className="w-full" onClick={handleClose}>
-              Close
-            </Button>
-          </>
-        )}
-
-        {phase === "cancelled" && (
-          <>
-            <p className="text-sm text-muted">
-              Alert cancelled. Stay safe!
-            </p>
-            <Button className="w-full" variant="outline" onClick={handleClose}>
-              Close
-            </Button>
-          </>
-        )}
-
-        {phase === "error" && (
-          <>
-            <p className="flex items-start gap-2 text-sm text-concern">
-              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-              <span>{errorMessage}</span>
-            </p>
-
-            {result?.sms_simulated && (
-              <p className="text-xs text-muted">
-                SMS remains simulated; no real SMS was sent.
-              </p>
-            )}
-
-            <div className="flex gap-2">
+          {/* Phase 5: CANCELLED */}
+          {phase === "cancelled" && (
+            <div className="py-6 text-center space-y-4">
+              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-safer/15 text-safer">
+                <ShieldCheck className="h-6 w-6" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-base font-bold text-ink">Alert Cancelled</h3>
+                <p className="text-xs text-muted max-w-xs mx-auto">
+                  No alerts or voice calls were dispatched. Stay safe!
+                </p>
+              </div>
               <Button
-                variant="outline"
-                className="flex-1"
+                type="button"
+                className="w-full rounded-xl bg-ink text-white font-semibold"
                 onClick={handleClose}
               >
                 Close
               </Button>
-              <Button
-                className="flex-1 bg-concern hover:bg-concern/90"
-                onClick={() => void sendAlert()}
-              >
-                Retry
-              </Button>
             </div>
-          </>
-        )}
+          )}
+
+          {/* Phase 6: ERROR */}
+          {phase === "error" && (
+            <div className="space-y-4 py-2">
+              <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-concern flex items-start gap-2">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                <div>
+                  <span className="font-bold block">Dispatch Failed or Unconfirmed</span>
+                  <span className="text-[11px] leading-relaxed block">{errorMessage}</span>
+                </div>
+              </div>
+
+              {/* Status details if any available */}
+              {result && (
+                <div className="rounded-xl border border-line bg-surface/50 p-3 space-y-1.5 text-xs">
+                  {result.email_error && (
+                    <div className="text-muted">
+                      <b>Email error:</b> {result.email_error}
+                    </div>
+                  )}
+                  {result.call_error && (
+                    <div className="text-muted">
+                      <b>Voice call error:</b> {result.call_error}
+                    </div>
+                  )}
+                  {result.sms_simulated && (
+                    <div className="text-[11px] text-muted">
+                      SMS remains simulated in demo mode.
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="rounded-xl border border-red-200 bg-red-50/70 p-3 text-xs flex items-center justify-between">
+                <div>
+                  <span className="font-bold text-concern block">Dial Emergency Services</span>
+                  <span className="text-[11px] text-muted">Direct phone line to 112.</span>
+                </div>
+                <a
+                  href="tel:112"
+                  className="rounded-lg bg-concern px-3 py-1.5 text-xs font-bold text-white hover:bg-concern/90"
+                >
+                  Call 112
+                </a>
+              </div>
+
+              <div className="flex gap-2 pt-1">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-1/2 rounded-xl text-ink"
+                  onClick={handleClose}
+                >
+                  Close
+                </Button>
+                <Button
+                  type="button"
+                  className="w-1/2 rounded-xl bg-concern text-white font-bold hover:bg-concern/90"
+                  onClick={() => void sendAlert()}
+                >
+                  Retry Dispatch
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
       </Card>
     </div>
   );
